@@ -6,6 +6,7 @@ mod header;
 mod lump;
 mod map;
 mod texture;
+mod write;
 
 pub use error::WadError;
 pub use header::{WadKind, WadHeader, LumpEntry};
@@ -15,3 +16,4 @@ pub use texture::{
     parse_pnames, parse_textures, Flat, Palette, Patch, PatchName, PatchRef, TextureDef,
     TextureImage, FLAT_DIM,
 };
+pub use write::{pwad_preserving_others, pwad_with_one_map, save_map_to_path};

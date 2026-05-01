@@ -64,6 +64,12 @@ pub struct EditorState {
     pub dialog: Option<Dialog>,
     pub viewer_open: bool,
     pub viewer_category: ViewerCategory,
+    /// True when the in-memory map has unsaved changes.
+    pub is_dirty: bool,
+    /// Drag state: world-space remainder accumulated during a mouse drag so
+    /// integer-coord snap doesn't lose sub-pixel motion across frames.
+    pub drag_residual: egui::Vec2,
+    pub drag_active: bool,
 }
 
 impl Default for EditorState {
@@ -86,6 +92,9 @@ impl Default for EditorState {
             dialog: None,
             viewer_open: false,
             viewer_category: ViewerCategory::Walls,
+            is_dirty: false,
+            drag_residual: egui::Vec2::ZERO,
+            drag_active: false,
         }
     }
 }

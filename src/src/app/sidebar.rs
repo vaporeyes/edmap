@@ -88,7 +88,8 @@ fn info_box(ui: &mut egui::Ui, state: &EditorState) {
         .inner_margin(egui::Margin::symmetric(4.0, 2.0));
     frame.show(ui, |ui| {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-        let map_name = state.map.as_ref().map(|m| m.name.as_str()).unwrap_or("untitled");
+        let base = state.map.as_ref().map(|m| m.name.as_str()).unwrap_or("untitled");
+        let map_name = if state.is_dirty { format!("{base} *") } else { base.to_string() };
         ui.label(RichText::new(map_name).color(theme::VGA_YELLOW).strong());
         let origin = if state.wad_path.is_some() { "from PWAD" } else { "original map" };
         ui.label(RichText::new(origin).color(theme::VGA_WHITE).size(11.0));

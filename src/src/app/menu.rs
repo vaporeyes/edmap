@@ -208,9 +208,12 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
             state.selection.clear();
             state.view_center = egui::pos2(0.0, 0.0);
             state.view_zoom = 1.0;
+            state.is_dirty = false;
         }
         ("File (map)", "Open map file") => open_wad_picker(state),
+        ("File (map)", "Save map data") => super::commands::save_map(state),
         ("File (map)", "Quit to DOS") => std::process::exit(0),
+        ("WAD list", "Save as PWAD...") => super::commands::save_map_as(state),
         ("WAD list", "List WADs") => state.dialog = Some(Dialog::WadList),
         ("WAD list", "Add PWAD file") => open_wad_picker(state),
         ("Edit", "Next object") => super::commands::cycle_selection(state, 1),
@@ -218,6 +221,7 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
         ("Edit", "Goto object") => {
             state.dialog = Some(Dialog::GotoObject { input: String::new() });
         }
+        ("Edit", "Delete/merge") => super::commands::delete_selected(state),
         ("Display", "Grid on/off") => state.grid_visible = !state.grid_visible,
         ("Display", "Origin on/off") => state.origin_visible = !state.origin_visible,
         ("Display", "Center map") => super::commands::center_map(state),
@@ -252,6 +256,7 @@ fn open_wad_picker(state: &mut EditorState) {
             state.map = None;
             state.selection.clear();
             state.status_message = None;
+            state.is_dirty = false;
             match maps.len() {
                 0 => {
                     state.status_message = Some("WAD\\No maps in this file.".into());

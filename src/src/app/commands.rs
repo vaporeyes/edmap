@@ -1,7 +1,8 @@
 // ABOUTME: Editor commands invoked by menu clicks and keybindings.
 // ABOUTME: Each function mutates EditorState; keep them small and pure-ish.
 
-use super::state::{EditorState, SelectionMode};
+use super::state::{Dialog, EditorState, SelectionMode};
+use crate::wad::LineDef;
 
 pub fn cycle_selection(state: &mut EditorState, direction: i32) {
     let total = state.total_for_mode();
@@ -98,4 +99,243 @@ fn sector_centroid(map: &crate::wad::MapData, sector_idx: usize) -> Option<(f32,
         return None;
     }
     Some((sum.0 as f32 / count as f32, sum.1 as f32 / count as f32))
+}
+
+/// Translate every selected object by (dx, dy) world units. Used by drag.
+pub fn translate_selection(state: &mut EditorState, dx: i32, dy: i32) {
+    if dx == 0 && dy == 0 {
+        return;
+    }
+    let Some(map) = state.map.as_mut() else { return };
+    match state.mode {
+        SelectionMode::Vertex => {
+            for &i in &state.selection {
+                if let Some(v) = map.vertices.get_mut(i) {
+                    v.x = v.x.saturating_add(dx as i16);
+                    v.y = v.y.saturating_add(dy as i16);
+                }
+            }
+        }
+        SelectionMode::LineDef => {
+            // Move every vertex referenced by any selected LineDef. Use a set
+            // so a shared vertex isn't translated twice when both adjoining
+            // LineDefs are selected.
+            let mut moved: std::collections::HashSet<u16> = std::collections::HashSet::new();
+            for &i in &state.selection {
+                let Some(ld) = map.linedefs.get(i) else { continue };
+                moved.insert(ld.start_vertex);
+                moved.insert(ld.end_vertex);
+            }
+            for vi in moved {
+                if let Some(v) = map.vertices.get_mut(vi as usize) {
+                    v.x = v.x.saturating_add(dx as i16);
+                    v.y = v.y.saturating_add(dy as i16);
+                }
+            }
+        }
+        SelectionMode::Thing => {
+            for &i in &state.selection {
+                if let Some(t) = map.things.get_mut(i) {
+                    t.x = t.x.saturating_add(dx as i16);
+                    t.y = t.y.saturating_add(dy as i16);
+                }
+            }
+        }
+        SelectionMode::Sector => {
+            // Translate every vertex that participates in any selected sector
+            // (resolved via SideDefs). De-duplicate so vertex isn't moved twice.
+            let mut moved: std::collections::HashSet<u16> = std::collections::HashSet::new();
+            for ld in &map.linedefs {
+                for sd_idx in [ld.front_sidedef, ld.back_sidedef] {
+                    if sd_idx == LineDef::NO_SIDEDEF {
+                        continue;
+                    }
+                    let Some(sd) = map.sidedefs.get(sd_idx as usize) else { continue };
+                    if state.selection.iter().any(|&s| s == sd.sector as usize) {
+                        moved.insert(ld.start_vertex);
+                        moved.insert(ld.end_vertex);
+                    }
+                }
+            }
+            for vi in moved {
+                if let Some(v) = map.vertices.get_mut(vi as usize) {
+                    v.x = v.x.saturating_add(dx as i16);
+                    v.y = v.y.saturating_add(dy as i16);
+                }
+            }
+        }
+    }
+    state.is_dirty = true;
+}
+
+/// Delete the selected object(s). Refuses to delete vertices that still
+/// support a LineDef (matches original "Delete\\This VERTEX supports a LINEDEF.").
+pub fn delete_selected(state: &mut EditorState) {
+    if state.selection.is_empty() {
+        return;
+    }
+    let Some(map) = state.map.as_mut() else { return };
+
+    match state.mode {
+        SelectionMode::Vertex => {
+            // Refuse if any selected vertex is referenced by a LineDef.
+            for &vi in &state.selection {
+                let referenced = map.linedefs.iter().any(|ld| {
+                    ld.start_vertex as usize == vi || ld.end_vertex as usize == vi
+                });
+                if referenced {
+                    state.dialog = Some(Dialog::Notice {
+                        title: "Delete".into(),
+                        message: "This VERTEX supports a LINEDEF.".into(),
+                    });
+                    return;
+                }
+            }
+            // Delete in descending order so earlier indices stay valid.
+            let mut indices: Vec<usize> = state.selection.clone();
+            indices.sort_unstable_by(|a, b| b.cmp(a));
+            for vi in indices {
+                if vi < map.vertices.len() {
+                    map.vertices.remove(vi);
+                    // Fix up linedef vertex indices.
+                    for ld in &mut map.linedefs {
+                        if ld.start_vertex as usize > vi {
+                            ld.start_vertex -= 1;
+                        }
+                        if ld.end_vertex as usize > vi {
+                            ld.end_vertex -= 1;
+                        }
+                    }
+                }
+            }
+        }
+        SelectionMode::LineDef => {
+            let mut indices: Vec<usize> = state.selection.clone();
+            indices.sort_unstable_by(|a, b| b.cmp(a));
+            for li in indices {
+                if li < map.linedefs.len() {
+                    map.linedefs.remove(li);
+                }
+            }
+        }
+        SelectionMode::Thing => {
+            let mut indices: Vec<usize> = state.selection.clone();
+            indices.sort_unstable_by(|a, b| b.cmp(a));
+            for ti in indices {
+                if ti < map.things.len() {
+                    map.things.remove(ti);
+                }
+            }
+        }
+        SelectionMode::Sector => {
+            // Sector deletion is destructive (orphans linedefs). Surface a
+            // not-yet-implemented notice rather than silently corrupting the map.
+            state.dialog = Some(Dialog::Notice {
+                title: "Delete".into(),
+                message: "Sector deletion not implemented yet.".into(),
+            });
+            return;
+        }
+    }
+
+    state.selection.clear();
+    state.is_dirty = true;
+}
+
+/// Snap a world-coordinate delta to the editor's snap size, accumulating any
+/// sub-snap residual into `state.drag_residual` so motion isn't lost.
+pub fn snap_drag_delta(state: &mut EditorState, delta_world: egui::Vec2) -> (i32, i32) {
+    let snap = state.snap_size.max(1) as f32;
+    let total = state.drag_residual + delta_world;
+    // Round toward zero so dragging ←/↑ doesn't get a free pixel.
+    let dx_units = (total.x / snap).trunc();
+    let dy_units = (total.y / snap).trunc();
+    let dx = (dx_units * snap) as i32;
+    let dy = (dy_units * snap) as i32;
+    state.drag_residual = total - egui::vec2(dx as f32, dy as f32);
+    (dx, dy)
+}
+
+/// Save the current map back to its source PWAD path. Refuses to write to an
+/// IWAD; falls through to Save-As when no path is set yet.
+pub fn save_map(state: &mut EditorState) {
+    let Some(map) = state.map.as_ref() else {
+        state.dialog = Some(Dialog::Notice {
+            title: "Save".into(),
+            message: "No map to save.".into(),
+        });
+        return;
+    };
+    if let Some(wad) = state.wad.as_ref() {
+        if matches!(wad.header.kind, crate::wad::WadKind::Iwad) {
+            state.dialog = Some(Dialog::Notice {
+                title: "PWAD Save".into(),
+                message: "Cannot save to the IWAD. Use Save as PWAD.".into(),
+            });
+            return;
+        }
+    }
+    let Some(path) = state.wad_path.clone() else {
+        return save_map_as(state);
+    };
+    let map_clone = map.clone();
+    let result = match state.wad.as_ref() {
+        Some(wad) => crate::wad::save_map_to_path(&path, Some(wad), &map_clone),
+        None => crate::wad::save_map_to_path(&path, None, &map_clone),
+    };
+    match result {
+        Ok(()) => {
+            state.is_dirty = false;
+            state.status_message = Some(format!("Saved to {}", path.display()));
+            // Re-read the WAD so subsequent saves see our own writes (and the
+            // texture bank picks up any preserved/added asset lumps).
+            if let Ok(reread) = crate::wad::Wad::from_path(&path) {
+                state.wad = Some(reread);
+            }
+        }
+        Err(e) => {
+            state.dialog = Some(Dialog::Notice {
+                title: "PWAD Save".into(),
+                message: format!("Save failed: {e}"),
+            });
+        }
+    }
+}
+
+/// Prompt for a target path with the native picker and save the map there.
+pub fn save_map_as(state: &mut EditorState) {
+    let Some(map) = state.map.as_ref() else {
+        state.dialog = Some(Dialog::Notice {
+            title: "Save as PWAD".into(),
+            message: "No map to save.".into(),
+        });
+        return;
+    };
+    let suggested = format!("{}.wad", map.name);
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("WAD files", &["wad", "WAD"])
+        .set_file_name(&suggested)
+        .save_file()
+    else {
+        return;
+    };
+    let map_clone = map.clone();
+    let src = state.wad.as_ref();
+    match crate::wad::save_map_to_path(&path, src, &map_clone) {
+        Ok(()) => {
+            state.wad_path = Some(path.clone());
+            // Re-read so the in-memory Wad matches what's now on disk.
+            if let Ok(reread) = crate::wad::Wad::from_path(&path) {
+                state.wad = Some(reread);
+            }
+            state.is_dirty = false;
+            state.status_message = Some(format!("Saved to {}", path.display()));
+        }
+        Err(e) => {
+            state.dialog = Some(Dialog::Notice {
+                title: "Save as PWAD".into(),
+                message: format!("Save failed: {e}"),
+            });
+        }
+    }
 }

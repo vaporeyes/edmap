@@ -32,8 +32,8 @@ pub const MENU_EDGE_LIGHT: Color32 = VGA_WHITE;
 // Map info box uses the same blue as the rest of the sidebar so the whole
 // info column reads as one continuous panel (matches original EdMap).
 pub const INFO_BOX_BG: Color32 = SIDEBAR_BG;
-// Viewport background — pure black with grid dots painted on top.
-pub const VIEWPORT_BG: Color32 = VGA_BLACK;
+// Viewport background — deep blue, matches original EdMap map view.
+pub const VIEWPORT_BG: Color32 = Color32::from_rgb(0x00, 0x00, 0x28);
 // Grid dot color.
 pub const GRID_DOT: Color32 = Color32::from_rgb(0x00, 0x00, 0x55);
 // LineDef stroke — bright on dark.

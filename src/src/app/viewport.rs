@@ -3,6 +3,7 @@
 
 use eframe::egui::{self, Pos2, Stroke};
 
+use super::commands;
 use super::hittest;
 use super::state::{EditorState, SelectionMode};
 use crate::theme;
@@ -126,6 +127,15 @@ fn compute_hover(response: &egui::Response, state: &EditorState) -> Option<Hover
     }
 }
 
+fn hover_index_for_mode(mode: SelectionMode, hover: Option<Hover>) -> Option<usize> {
+    match (mode, hover) {
+        (SelectionMode::Vertex, Some(Hover::Vertex(i))) => Some(i),
+        (SelectionMode::LineDef, Some(Hover::LineDef(i))) => Some(i),
+        (SelectionMode::Thing, Some(Hover::Thing(i))) => Some(i),
+        _ => None,
+    }
+}
+
 /// True if `ld`'s front or back sidedef belongs to any currently-selected sector.
 /// Used to highlight an entire sector's boundary linedefs in sector mode.
 fn sidedef_in_selected_sector(
@@ -164,6 +174,37 @@ fn handle_input(
         state.view_center.x -= delta.x / state.view_zoom;
         // egui Y goes down; world Y goes up — invert.
         state.view_center.y += delta.y / state.view_zoom;
+    }
+    // Primary-button drag = move selected objects. Sector mode dragging would
+    // require translating an entire sector boundary; skipped for now.
+    let primary_drag = response.dragged_by(egui::PointerButton::Primary);
+    if primary_drag && state.mode != SelectionMode::Sector {
+        // Drag start on an unselected object: auto-select it so the drag has
+        // something to act on. Avoids the "click first, then drag" two-step.
+        if !state.drag_active {
+            state.drag_active = true;
+            state.drag_residual = egui::Vec2::ZERO;
+            if state.selection.is_empty() {
+                if let Some(idx) = hover_index_for_mode(state.mode, hover) {
+                    state.selection.push(idx);
+                }
+            }
+        }
+        if !state.selection.is_empty() {
+            let scrn_delta = response.drag_delta();
+            // Screen → world delta: invert Y because world Y axis points up.
+            let world_delta = egui::vec2(
+                scrn_delta.x / state.view_zoom,
+                -scrn_delta.y / state.view_zoom,
+            );
+            let (dx, dy) = commands::snap_drag_delta(state, world_delta);
+            if dx != 0 || dy != 0 {
+                commands::translate_selection(state, dx, dy);
+            }
+        }
+    } else if !primary_drag && state.drag_active {
+        state.drag_active = false;
+        state.drag_residual = egui::Vec2::ZERO;
     }
     // Zoom: scroll wheel.
     let scroll = ui.input(|i| i.smooth_scroll_delta.y);
