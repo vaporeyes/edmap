@@ -1,0 +1,123 @@
+// ABOUTME: Global keybindings dispatch — maps every menu hotkey from the UX spec to handle_command.
+// ABOUTME: Plus mode keys (V/L/S/T) and zoom keys (+ / -) that mirror the original feel.
+
+use eframe::egui::{self, Key, Modifiers};
+
+use super::commands;
+use super::menu::handle_command;
+use super::state::{EditorState, SelectionMode};
+
+/// Map of menu-style hotkey strings (from items_for) to (Modifiers, Key).
+/// Stays in lockstep with the labels rendered in menu rows so users can't
+/// see a hotkey on screen that we don't actually handle.
+fn parse_hotkey(s: &str) -> Option<(Modifiers, Key)> {
+    let mut mods = Modifiers::NONE;
+    let mut rest = s;
+    loop {
+        if let Some(r) = rest.strip_prefix("Ctrl-") {
+            mods.ctrl = true;
+            mods.command = true;
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("Shift-") {
+            mods.shift = true;
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("Alt-") {
+            mods.alt = true;
+            rest = r;
+        } else {
+            break;
+        }
+    }
+    let key = match rest {
+        "F1" => Key::F1,
+        "F2" => Key::F2,
+        "F3" => Key::F3,
+        "F4" => Key::F4,
+        "F5" => Key::F5,
+        "F6" => Key::F6,
+        "F7" => Key::F7,
+        "F8" => Key::F8,
+        "F9" => Key::F9,
+        "F10" => Key::F10,
+        "Ins" => Key::Insert,
+        "BkSp" => Key::Backspace,
+        "Num Lock" => return None, // egui has no NumLock; skip rather than misbind.
+        ">" => Key::Period,        // physical key without shift; we'll allow shift too
+        "<" => Key::Comma,
+        "A" => Key::A, "B" => Key::B, "C" => Key::C, "D" => Key::D, "E" => Key::E,
+        "F" => Key::F, "G" => Key::G, "H" => Key::H, "I" => Key::I, "J" => Key::J,
+        "K" => Key::K, "L" => Key::L, "M" => Key::M, "N" => Key::N, "O" => Key::O,
+        "P" => Key::P, "Q" => Key::Q, "R" => Key::R, "S" => Key::S, "T" => Key::T,
+        "U" => Key::U, "V" => Key::V, "W" => Key::W, "X" => Key::X, "Y" => Key::Y,
+        "Z" => Key::Z,
+        _ => return None,
+    };
+    Some((mods, key))
+}
+
+/// Walk every menu and every item; if the item has a hotkey and the hotkey is
+/// pressed this frame, dispatch the command. Single source of truth: the menu spec.
+pub fn dispatch(ctx: &egui::Context, state: &mut EditorState) {
+    let menus = super::menu::MENU_ORDER;
+    let mut to_run: Option<(&'static str, &'static str)> = None;
+    ctx.input(|input| {
+        for menu in menus {
+            for (label, hotkey) in super::menu::items_for(menu) {
+                if hotkey.is_empty() {
+                    continue;
+                }
+                let Some((mods, key)) = parse_hotkey(hotkey) else { continue };
+                // Match modifier set exactly (Cmd is treated like Ctrl on macOS).
+                if input.modifiers.matches_logically(mods) && input.key_pressed(key) {
+                    to_run = Some((*menu, *label));
+                    return;
+                }
+            }
+        }
+
+        // Mode keys outside the menu spec — keyboard-first feel from the original.
+        if !any_modifier(&input.modifiers) {
+            if input.key_pressed(Key::Num1) || input.key_pressed(Key::V) {
+                commands::set_mode(state, SelectionMode::Vertex);
+            }
+            if input.key_pressed(Key::Num2) {
+                commands::set_mode(state, SelectionMode::LineDef);
+            }
+            if input.key_pressed(Key::Num3) {
+                commands::set_mode(state, SelectionMode::Sector);
+            }
+            if input.key_pressed(Key::Num4) {
+                commands::set_mode(state, SelectionMode::Thing);
+            }
+            if input.key_pressed(Key::Tab) {
+                let next = match state.mode {
+                    SelectionMode::Vertex => SelectionMode::LineDef,
+                    SelectionMode::LineDef => SelectionMode::Sector,
+                    SelectionMode::Sector => SelectionMode::Thing,
+                    SelectionMode::Thing => SelectionMode::Vertex,
+                };
+                commands::set_mode(state, next);
+            }
+            if input.key_pressed(Key::Escape) {
+                state.open_menu = None;
+                state.status_message = None;
+            }
+        }
+
+        // Zoom keys — keep + / - working regardless of shift.
+        if input.key_pressed(Key::Plus) || input.key_pressed(Key::Equals) {
+            state.view_zoom = (state.view_zoom * 1.25).min(16.0);
+        }
+        if input.key_pressed(Key::Minus) {
+            state.view_zoom = (state.view_zoom / 1.25).max(0.01);
+        }
+    });
+
+    if let Some((menu, label)) = to_run {
+        handle_command(state, menu, label);
+    }
+}
+
+fn any_modifier(m: &Modifiers) -> bool {
+    m.ctrl || m.alt || m.shift || m.command || m.mac_cmd
+}

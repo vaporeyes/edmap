@@ -41,30 +41,38 @@ fn separator(ui: &mut egui::Ui) {
 fn menu_list(ui: &mut egui::Ui, state: &mut EditorState) {
     for &name in MENU_ORDER {
         let is_open = state.open_menu == Some(name);
-        let bg = if is_open { theme::VGA_GRAY } else { theme::SIDEBAR_BG };
-        let fg = if is_open { theme::VGA_BLACK } else { theme::VGA_WHITE };
-        let chevron_color = if is_open { theme::VGA_BLACK } else { theme::VGA_GRAY };
 
-        let desired = egui::vec2(ui.available_width(), 14.0);
+        let desired = egui::vec2(ui.available_width(), 15.0);
         let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click());
         let painter = ui.painter_at(rect);
+
+        let bg = if is_open { theme::MENU_HILITE_BG } else { theme::MENU_BG };
+        let fg = if is_open { theme::MENU_HILITE_FG } else { theme::MENU_FG };
         painter.rect_filled(rect, 0.0, bg);
+
+        // 1-pixel depressed edge along the bottom of every row to give the button look.
+        painter.hline(
+            rect.left()..=rect.right(),
+            rect.bottom() - 1.0,
+            egui::Stroke::new(1.0, theme::MENU_EDGE_DARK),
+        );
 
         let font = egui::FontId::new(12.0, egui::FontFamily::Monospace);
         painter.text(
             egui::pos2(rect.left() + 4.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
             name,
-            font.clone(),
+            font,
             fg,
         );
-        painter.text(
-            egui::pos2(rect.right() - 4.0, rect.center().y),
-            egui::Align2::RIGHT_CENTER,
-            ">",
-            font,
-            chevron_color,
-        );
+        // Filled right-pointing triangle — Turbo-Vision cascade indicator.
+        let tri_right = egui::pos2(rect.right() - 5.0, rect.center().y);
+        let tri = vec![
+            egui::pos2(tri_right.x - 4.0, tri_right.y - 3.0),
+            egui::pos2(tri_right.x - 4.0, tri_right.y + 3.0),
+            tri_right,
+        ];
+        painter.add(egui::Shape::convex_polygon(tri, fg, egui::Stroke::NONE));
 
         if resp.clicked() {
             state.open_menu = if is_open { None } else { Some(name) };

@@ -20,6 +20,15 @@ pub const VGA_WHITE: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
 
 // Sidebar background — dark blue panel from the screenshot.
 pub const SIDEBAR_BG: Color32 = Color32::from_rgb(0x00, 0x00, 0x2A);
+// Menu rows + cascade panels — Turbo-Vision-style gray buttons.
+pub const MENU_BG: Color32 = VGA_GRAY;
+pub const MENU_FG: Color32 = VGA_BLACK;
+// Inverse highlight (active top-level, hovered cascade row).
+pub const MENU_HILITE_BG: Color32 = VGA_BLACK;
+pub const MENU_HILITE_FG: Color32 = VGA_WHITE;
+// 1-pixel "depressed" edges between menu rows.
+pub const MENU_EDGE_DARK: Color32 = VGA_DARK_GRAY;
+pub const MENU_EDGE_LIGHT: Color32 = VGA_WHITE;
 // Map info box background (yellow MAP 1 on solid blue).
 pub const INFO_BOX_BG: Color32 = VGA_BLUE;
 // Viewport background — pure black with grid dots painted on top.

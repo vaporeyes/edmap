@@ -1,6 +1,8 @@
 // ABOUTME: Top-level egui app — composes title bar, left sidebar, and map viewport.
 // ABOUTME: Owns the editor state (current WAD, current map, selection, view transform).
 
+mod commands;
+mod keybindings;
 mod menu;
 mod sidebar;
 mod state;
@@ -9,7 +11,7 @@ mod viewport;
 use eframe::egui;
 
 use crate::theme;
-pub use state::{EditorState, SelectionMode};
+pub use state::EditorState;
 
 pub struct EdMapApp {
     state: EditorState,
@@ -23,6 +25,7 @@ impl EdMapApp {
 
 impl eframe::App for EdMapApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        keybindings::dispatch(ctx, &mut self.state);
         title_bar(ctx);
 
         egui::SidePanel::left("sidebar")
@@ -47,13 +50,17 @@ impl eframe::App for EdMapApp {
 
 fn title_bar(ctx: &egui::Context) {
     egui::TopBottomPanel::top("title")
-        .exact_height(18.0)
-        .frame(egui::Frame::none().fill(theme::SIDEBAR_BG).inner_margin(egui::Margin::symmetric(4.0, 1.0)))
+        .exact_height(16.0)
+        .frame(
+            egui::Frame::none()
+                .fill(theme::MENU_BG)
+                .inner_margin(egui::Margin::symmetric(4.0, 1.0)),
+        )
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
-                ui.colored_label(theme::VGA_WHITE, "EdMap");
+                ui.colored_label(theme::MENU_FG, "EdMap");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.colored_label(theme::VGA_GRAY, "v1.40");
+                    ui.colored_label(theme::MENU_FG, "v1.40");
                 });
             });
         });
