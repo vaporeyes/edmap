@@ -32,6 +32,11 @@ pub enum Dialog {
     ErrorList { results: Vec<super::checks::CheckResult>, cursor: usize },
     Polygon { sides: String, radius: String },
     Door { key: DoorKey, fast: bool },
+    Lift { repeatable: bool, fast: bool },
+    Teleporter,
+    ShiftMap { dx: String, dy: String, dz: String },
+    ExpandMap { sx: String, sy: String, sz: String },
+    LightAdjust { a: String, b: String },
     EditVertex { idx: usize, x: String, y: String },
     EditLineDef {
         idx: usize,

@@ -236,6 +236,26 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
         ("Edit", "Goto object") => {
             state.dialog = Some(Dialog::GotoObject { input: String::new() });
         }
+        ("Map utilities", "Shift Map (X/Y/Z)") => {
+            state.dialog = Some(Dialog::ShiftMap {
+                dx: "0".into(),
+                dy: "0".into(),
+                dz: "0".into(),
+            });
+        }
+        ("Map utilities", "Expand/reduce map") => {
+            state.dialog = Some(Dialog::ExpandMap {
+                sx: "1.0".into(),
+                sy: "1.0".into(),
+                sz: "1.0".into(),
+            });
+        }
+        ("Map utilities", "Light adjustment") => {
+            state.dialog = Some(Dialog::LightAdjust {
+                a: "100".into(),
+                b: "0".into(),
+            });
+        }
         ("Sectors", "Polygon") => {
             state.dialog = Some(Dialog::Polygon {
                 sides: "8".into(),
@@ -247,6 +267,15 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
                 key: super::state::DoorKey::Keyless,
                 fast: false,
             });
+        }
+        ("Automatic", "Lift") => {
+            state.dialog = Some(Dialog::Lift {
+                repeatable: true,
+                fast: false,
+            });
+        }
+        ("Automatic", "Teleporter") => {
+            state.dialog = Some(Dialog::Teleporter);
         }
         ("Automatic", "Stairs") => {
             state.dialog = Some(Dialog::Stairs {

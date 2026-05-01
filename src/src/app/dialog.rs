@@ -75,7 +75,12 @@ fn title_for(dialog: &Dialog) -> &'static str {
         Dialog::ErrorList { .. } => "Error List",
         Dialog::Polygon { .. } => "Polygon",
         Dialog::Door { .. } => "Door",
+        Dialog::Lift { .. } => "Lift",
+        Dialog::Teleporter => "Teleporter",
         Dialog::Stairs { .. } => "Stairs",
+        Dialog::ShiftMap { .. } => "Map shift",
+        Dialog::ExpandMap { .. } => "Map expand/reduce",
+        Dialog::LightAdjust { .. } => "Map light adjustment",
         Dialog::EditVertex { .. } => "Edit Vertex",
         Dialog::EditLineDef { .. } => "Edit LineDef",
         Dialog::EditSector { .. } => "Edit Sector",
@@ -98,6 +103,11 @@ fn body(ui: &mut egui::Ui, state: &mut EditorState, dialog: Dialog) -> bool {
         Dialog::ErrorList { results, cursor } => error_list_body(ui, state, results, cursor),
         Dialog::Polygon { sides, radius } => polygon_body(ui, state, sides, radius),
         Dialog::Door { key, fast } => door_body(ui, state, key, fast),
+        Dialog::Lift { repeatable, fast } => lift_body(ui, state, repeatable, fast),
+        Dialog::Teleporter => teleporter_body(ui, state),
+        Dialog::ShiftMap { dx, dy, dz } => shift_map_body(ui, state, dx, dy, dz),
+        Dialog::ExpandMap { sx, sy, sz } => expand_map_body(ui, state, sx, sy, sz),
+        Dialog::LightAdjust { a, b } => light_adjust_body(ui, state, a, b),
         Dialog::EditVertex { idx, x, y } => edit_vertex_body(ui, state, idx, x, y),
         Dialog::EditLineDef {
             idx, flags, special, tag, front_sidedef, back_sidedef,
@@ -1032,4 +1042,222 @@ fn clamp_tex_name(s: &str) -> String {
         }
     }
     if out.is_empty() { "-".into() } else { out }
+}
+
+// ---------------- Map utilities (Shift / Expand / Light) ----------------
+
+fn shift_map_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    dx: String,
+    dy: String,
+    dz: String,
+) -> bool {
+    let mut dx = dx;
+    let mut dy = dy;
+    let mut dz = dz;
+    ui.colored_label(theme::MENU_FG, "Translate every vertex + thing by (dx, dy)");
+    ui.colored_label(theme::MENU_FG, "and every sector floor + ceiling by dz.");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "X (east/west):  ");
+        ui.add(text_box(&mut dx, 8));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Y (north/south):");
+        ui.add(text_box(&mut dy, 8));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Z (up/down):    ");
+        ui.add(text_box(&mut dz, 8));
+    });
+    ui.add_space(6.0);
+    let close = ui
+        .horizontal(|ui| {
+            let ok = button(ui, "OK").clicked();
+            let cancel = button(ui, "cancel").clicked();
+            if ok {
+                let dx_v: i32 = dx.trim().parse().unwrap_or(0);
+                let dy_v: i32 = dy.trim().parse().unwrap_or(0);
+                let dz_v: i32 = dz.trim().parse().unwrap_or(0);
+                commands::shift_map(state, dx_v, dy_v, dz_v);
+                return true;
+            }
+            cancel
+        })
+        .inner;
+    if !close {
+        state.dialog = Some(Dialog::ShiftMap { dx, dy, dz });
+    }
+    close
+}
+
+fn expand_map_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    sx: String,
+    sy: String,
+    sz: String,
+) -> bool {
+    let mut sx = sx;
+    let mut sy = sy;
+    let mut sz = sz;
+    ui.colored_label(theme::MENU_FG, "Scale every vertex around the map's center.");
+    ui.colored_label(theme::MENU_FG, "Heights scale around 0. Factors must be > 0.");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "X factor:");
+        ui.add(text_box(&mut sx, 6));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Y factor:");
+        ui.add(text_box(&mut sy, 6));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Z factor:");
+        ui.add(text_box(&mut sz, 6));
+    });
+    ui.add_space(6.0);
+    let close = ui
+        .horizontal(|ui| {
+            let ok = button(ui, "OK").clicked();
+            let cancel = button(ui, "cancel").clicked();
+            if ok {
+                let sx_v: f32 = sx.trim().parse().unwrap_or(1.0);
+                let sy_v: f32 = sy.trim().parse().unwrap_or(1.0);
+                let sz_v: f32 = sz.trim().parse().unwrap_or(1.0);
+                commands::expand_map(state, sx_v, sy_v, sz_v);
+                return true;
+            }
+            cancel
+        })
+        .inner;
+    if !close {
+        state.dialog = Some(Dialog::ExpandMap { sx, sy, sz });
+    }
+    close
+}
+
+fn light_adjust_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    a: String,
+    b: String,
+) -> bool {
+    let mut a = a;
+    let mut b = b;
+    ui.colored_label(theme::MENU_FG, "new_light = old_light × A/100 + B");
+    ui.colored_label(theme::MENU_FG, "Result clamped to [0, 255].");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "A (amplify, %): ");
+        ui.add(text_box(&mut a, 5));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "B (brighten):   ");
+        ui.add(text_box(&mut b, 5));
+    });
+    ui.add_space(6.0);
+    let close = ui
+        .horizontal(|ui| {
+            let ok = button(ui, "OK").clicked();
+            let cancel = button(ui, "cancel").clicked();
+            if ok {
+                let a_v: i32 = a.trim().parse().unwrap_or(100);
+                let b_v: i32 = b.trim().parse().unwrap_or(0);
+                commands::light_adjust(state, a_v, b_v);
+                return true;
+            }
+            cancel
+        })
+        .inner;
+    if !close {
+        state.dialog = Some(Dialog::LightAdjust { a, b });
+    }
+    close
+}
+
+// ---------------- Lift / Teleporter dialog bodies ----------------
+
+fn lift_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    repeatable: bool,
+    fast: bool,
+) -> bool {
+    let mut repeatable = repeatable;
+    let mut fast = fast;
+
+    ui.colored_label(theme::MENU_FG, "Turns the selected sector into a lift.");
+    ui.colored_label(theme::VGA_DARK_GRAY, "(must be in Sector mode with one selected)");
+    ui.add_space(4.0);
+
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Trigger:");
+        for (label, want) in [("Once", false), ("Repeatable", true)] {
+            let active = repeatable == want;
+            let label = if active {
+                RichText::new(label).color(theme::VGA_YELLOW).underline()
+            } else {
+                RichText::new(label).color(theme::VGA_BRIGHT_CYAN)
+            };
+            if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
+                repeatable = want;
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Speed:  ");
+        for (label, want) in [("Normal", false), ("Fast", true)] {
+            let active = fast == want;
+            let label = if active {
+                RichText::new(label).color(theme::VGA_YELLOW).underline()
+            } else {
+                RichText::new(label).color(theme::VGA_BRIGHT_CYAN)
+            };
+            if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
+                fast = want;
+            }
+        }
+    });
+    ui.add_space(6.0);
+
+    let close = ui
+        .horizontal(|ui| {
+            let ok = button(ui, "OK").clicked();
+            let cancel = button(ui, "cancel").clicked();
+            if ok {
+                commands::create_lift(state, repeatable, fast);
+                return true;
+            }
+            cancel
+        })
+        .inner;
+
+    if !close {
+        state.dialog = Some(Dialog::Lift { repeatable, fast });
+    }
+    close
+}
+
+fn teleporter_body(ui: &mut egui::Ui, state: &mut EditorState) -> bool {
+    ui.colored_label(theme::MENU_FG, "Pairs the two selected sectors as a");
+    ui.colored_label(theme::MENU_FG, "two-way teleporter.");
+    ui.add_space(2.0);
+    ui.colored_label(theme::VGA_DARK_GRAY, "(Sector mode, exactly two sectors selected)");
+    ui.add_space(2.0);
+    ui.colored_label(theme::VGA_DARK_GRAY, "Inserts a Thing-14 destination in each pad");
+    ui.colored_label(theme::VGA_DARK_GRAY, "and assigns matching tags + WR teleport actions.");
+    ui.add_space(6.0);
+
+    ui.horizontal(|ui| {
+        let ok = button(ui, "OK").clicked();
+        let cancel = button(ui, "cancel").clicked();
+        if ok {
+            commands::create_teleporter(state);
+            return true;
+        }
+        cancel
+    })
+    .inner
 }

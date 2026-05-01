@@ -773,6 +773,234 @@ mod tests {
             _ => panic!("expected EditSector dialog, got {:?}", state.dialog),
         }
     }
+
+    fn map_with_one_sector_and_thing() -> EditorState {
+        let map = MapData {
+            name: "U".into(),
+            vertices: vec![Vertex { x: 10, y: 20 }, Vertex { x: 100, y: 200 }],
+            linedefs: vec![],
+            sidedefs: vec![],
+            sectors: vec![crate::wad::Sector {
+                floor_height: 0,
+                ceiling_height: 128,
+                floor_texture: "F".into(),
+                ceiling_texture: "C".into(),
+                light_level: 100,
+                sector_type: 0,
+                tag: 0,
+            }],
+            things: vec![crate::wad::Thing {
+                x: 50, y: 60, angle: 0, thing_type: 1, flags: 7,
+            }],
+        };
+        let mut state = EditorState::default();
+        state.map = Some(map);
+        state
+    }
+
+    #[test]
+    fn shift_map_translates_vertices_things_and_sectors() {
+        let mut state = map_with_one_sector_and_thing();
+        shift_map(&mut state, 100, -50, 32);
+        let m = state.map.as_ref().unwrap();
+        assert_eq!(m.vertices[0].x, 110);
+        assert_eq!(m.vertices[0].y, -30);
+        assert_eq!(m.vertices[1].x, 200);
+        assert_eq!(m.vertices[1].y, 150);
+        assert_eq!(m.things[0].x, 150);
+        assert_eq!(m.things[0].y, 10);
+        assert_eq!(m.sectors[0].floor_height, 32);
+        assert_eq!(m.sectors[0].ceiling_height, 160);
+        assert!(state.is_dirty);
+    }
+
+    #[test]
+    fn expand_map_scales_around_centroid() {
+        let mut state = map_with_one_sector_and_thing();
+        // Centroid is ((10+100)/2, (20+200)/2) = (55, 110).
+        // Vertex 0 at (10, 20): offset from centroid = (-45, -90).
+        // After 2x: offset (-90, -180); new pos (55-90, 110-180) = (-35, -70).
+        let ok = expand_map(&mut state, 2.0, 2.0, 1.5);
+        assert!(ok);
+        let m = state.map.as_ref().unwrap();
+        assert_eq!(m.vertices[0].x, -35);
+        assert_eq!(m.vertices[0].y, -70);
+        // Vertex 1 at (100, 200): offset (45, 90); after 2x → (145, 290).
+        assert_eq!(m.vertices[1].x, 145);
+        assert_eq!(m.vertices[1].y, 290);
+        // Heights scale by 1.5x.
+        assert_eq!(m.sectors[0].floor_height, 0);
+        assert_eq!(m.sectors[0].ceiling_height, 192);
+        assert!(state.is_dirty);
+    }
+
+    #[test]
+    fn expand_map_rejects_non_positive_factor() {
+        let mut state = map_with_one_sector_and_thing();
+        let ok = expand_map(&mut state, -1.0, 1.0, 1.0);
+        assert!(!ok);
+        // Original geometry untouched.
+        let m = state.map.as_ref().unwrap();
+        assert_eq!(m.vertices[0].x, 10);
+        assert!(matches!(state.dialog, Some(Dialog::Notice { .. })));
+    }
+
+    #[test]
+    fn lift_applies_action_to_two_sided_boundary_only() {
+        // Two adjacent sectors: 0 (lift target) and 1 (corridor).
+        // One 2-sided boundary linedef + one 1-sided wall on sector 0.
+        let map = MapData {
+            name: "L".into(),
+            vertices: vec![
+                Vertex { x: 0, y: 0 },
+                Vertex { x: 64, y: 0 },
+                Vertex { x: 64, y: 64 },
+                Vertex { x: 0, y: 64 },
+            ],
+            linedefs: vec![
+                LineDef {
+                    start_vertex: 0, end_vertex: 1,
+                    flags: LineDef::FLAG_TWO_SIDED,
+                    special_type: 0, sector_tag: 0,
+                    front_sidedef: 0, back_sidedef: 1,
+                },
+                LineDef {
+                    start_vertex: 1, end_vertex: 2,
+                    flags: 0, special_type: 0, sector_tag: 0,
+                    front_sidedef: 2, back_sidedef: LineDef::NO_SIDEDEF,
+                },
+            ],
+            sidedefs: vec![
+                SideDef { x_offset: 0, y_offset: 0,
+                    upper_texture: "-".into(), lower_texture: "-".into(), middle_texture: "-".into(),
+                    sector: 0 },
+                SideDef { x_offset: 0, y_offset: 0,
+                    upper_texture: "-".into(), lower_texture: "-".into(), middle_texture: "-".into(),
+                    sector: 1 },
+                SideDef { x_offset: 0, y_offset: 0,
+                    upper_texture: "-".into(), lower_texture: "-".into(), middle_texture: "STEP".into(),
+                    sector: 0 },
+            ],
+            sectors: vec![
+                crate::wad::Sector { floor_height: 0, ceiling_height: 128,
+                    floor_texture: "F".into(), ceiling_texture: "C".into(),
+                    light_level: 160, sector_type: 0, tag: 0 },
+                crate::wad::Sector { floor_height: 32, ceiling_height: 128,
+                    floor_texture: "F".into(), ceiling_texture: "C".into(),
+                    light_level: 160, sector_type: 0, tag: 0 },
+            ],
+            things: vec![],
+        };
+        let mut state = EditorState::default();
+        state.map = Some(map);
+        state.mode = SelectionMode::Sector;
+        state.selection = vec![0];
+
+        let count = create_lift(&mut state, true, false);
+        assert_eq!(count, 1);
+        let m = state.map.as_ref().unwrap();
+        // Lift action 88 (WR) on the boundary linedef, with the new tag 1.
+        assert_eq!(m.linedefs[0].special_type, 88);
+        assert_eq!(m.linedefs[0].sector_tag, 1);
+        // 1-sided wall untouched.
+        assert_eq!(m.linedefs[1].special_type, 0);
+        assert_eq!(m.linedefs[1].sector_tag, 0);
+        assert_eq!(m.sectors[0].tag, 1);
+        assert!(state.is_dirty);
+    }
+
+    #[test]
+    fn teleporter_links_two_sectors_with_destination_things() {
+        // Three sectors: A (0), B (1), and an outer corridor (2). Boundaries:
+        //  ld0: 0|2  (front=0, back=2) — sector A's boundary
+        //  ld1: 1|2  (front=1, back=2) — sector B's boundary
+        //  ld2: 0|1  (front=0, back=1) — shared A↔B edge (should be skipped)
+        let mut sds = vec![
+            SideDef { x_offset: 0, y_offset: 0,
+                upper_texture: "-".into(), lower_texture: "-".into(), middle_texture: "-".into(), sector: 0 },
+            SideDef { x_offset: 0, y_offset: 0,
+                upper_texture: "-".into(), lower_texture: "-".into(), middle_texture: "-".into(), sector: 2 },
+            SideDef { x_offset: 0, y_offset: 0,
+                upper_texture: "-".into(), lower_texture: "-".into(), middle_texture: "-".into(), sector: 1 },
+            SideDef { x_offset: 0, y_offset: 0,
+                upper_texture: "-".into(), lower_texture: "-".into(), middle_texture: "-".into(), sector: 2 },
+            SideDef { x_offset: 0, y_offset: 0,
+                upper_texture: "-".into(), lower_texture: "-".into(), middle_texture: "-".into(), sector: 0 },
+            SideDef { x_offset: 0, y_offset: 0,
+                upper_texture: "-".into(), lower_texture: "-".into(), middle_texture: "-".into(), sector: 1 },
+        ];
+        let map = MapData {
+            name: "T".into(),
+            vertices: vec![
+                Vertex { x: 0, y: 0 }, Vertex { x: 64, y: 0 },
+                Vertex { x: 64, y: 64 }, Vertex { x: 0, y: 64 },
+            ],
+            linedefs: vec![
+                LineDef { start_vertex: 0, end_vertex: 1,
+                    flags: LineDef::FLAG_TWO_SIDED, special_type: 0, sector_tag: 0,
+                    front_sidedef: 0, back_sidedef: 1 },
+                LineDef { start_vertex: 2, end_vertex: 3,
+                    flags: LineDef::FLAG_TWO_SIDED, special_type: 0, sector_tag: 0,
+                    front_sidedef: 2, back_sidedef: 3 },
+                LineDef { start_vertex: 1, end_vertex: 2,
+                    flags: LineDef::FLAG_TWO_SIDED, special_type: 0, sector_tag: 0,
+                    front_sidedef: 4, back_sidedef: 5 },
+            ],
+            sidedefs: std::mem::take(&mut sds),
+            sectors: vec![
+                crate::wad::Sector { floor_height: 0, ceiling_height: 128,
+                    floor_texture: "F".into(), ceiling_texture: "C".into(),
+                    light_level: 160, sector_type: 0, tag: 0 },
+                crate::wad::Sector { floor_height: 0, ceiling_height: 128,
+                    floor_texture: "F".into(), ceiling_texture: "C".into(),
+                    light_level: 160, sector_type: 0, tag: 0 },
+                crate::wad::Sector { floor_height: 0, ceiling_height: 128,
+                    floor_texture: "F".into(), ceiling_texture: "C".into(),
+                    light_level: 160, sector_type: 0, tag: 0 },
+            ],
+            things: vec![],
+        };
+        let mut state = EditorState::default();
+        state.map = Some(map);
+        state.mode = SelectionMode::Sector;
+        state.selection = vec![0, 1]; // sectors A and B
+
+        let ok = create_teleporter(&mut state);
+        assert!(ok);
+        let m = state.map.as_ref().unwrap();
+
+        // Two destination things added (one per pad).
+        let dest_count = m.things.iter().filter(|t| t.thing_type == 14).count();
+        assert_eq!(dest_count, 2);
+
+        // Sector tags assigned (1 and 2 are first two unused).
+        assert_eq!(m.sectors[0].tag, 1);
+        assert_eq!(m.sectors[1].tag, 2);
+
+        // ld0 (A's boundary) should teleport to B's tag (2).
+        assert_eq!(m.linedefs[0].special_type, 97);
+        assert_eq!(m.linedefs[0].sector_tag, 2);
+        // ld1 (B's boundary) should teleport to A's tag (1).
+        assert_eq!(m.linedefs[1].special_type, 97);
+        assert_eq!(m.linedefs[1].sector_tag, 1);
+        // ld2 (A↔B shared) should NOT be wired — it's the inter-pad edge.
+        assert_eq!(m.linedefs[2].special_type, 0);
+        assert_eq!(m.linedefs[2].sector_tag, 0);
+    }
+
+    #[test]
+    fn light_adjust_applies_formula_and_clamps() {
+        let mut state = map_with_one_sector_and_thing();
+        // light starts at 100. With A=150, B=0 → 100*150/100 = 150.
+        light_adjust(&mut state, 150, 0);
+        assert_eq!(state.map.as_ref().unwrap().sectors[0].light_level, 150);
+        // Apply again with A=200, B=10 → 150*2 + 10 = 310 → clamped to 255.
+        light_adjust(&mut state, 200, 10);
+        assert_eq!(state.map.as_ref().unwrap().sectors[0].light_level, 255);
+        // Apply with A=0, B=-10 → 0 - 10 = -10 → clamped to 0.
+        light_adjust(&mut state, 0, -10);
+        assert_eq!(state.map.as_ref().unwrap().sectors[0].light_level, 0);
+    }
 }
 
 // ---------------- Automatic constructions ----------------
@@ -1073,4 +1301,294 @@ pub fn open_properties(state: &mut EditorState) {
             flags: t.flags.to_string(),
         }),
     };
+}
+
+// ---------------- Map-wide utilities ----------------
+
+/// Shift the entire map by (dx, dy) world units and (dz) heights. Vertex
+/// positions are translated by (dx, dy); every sector's floor and ceiling
+/// height add dz. Things and texture offsets are NOT moved (matches EdMap).
+pub fn shift_map(state: &mut EditorState, dx: i32, dy: i32, dz: i32) {
+    let Some(map) = state.map.as_mut() else { return };
+    if dx == 0 && dy == 0 && dz == 0 {
+        return;
+    }
+    for v in map.vertices.iter_mut() {
+        v.x = (v.x as i32 + dx).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        v.y = (v.y as i32 + dy).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    }
+    for t in map.things.iter_mut() {
+        t.x = (t.x as i32 + dx).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        t.y = (t.y as i32 + dy).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    }
+    for s in map.sectors.iter_mut() {
+        s.floor_height =
+            (s.floor_height as i32 + dz).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        s.ceiling_height =
+            (s.ceiling_height as i32 + dz).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    }
+    state.is_dirty = true;
+    state.status_message = Some(format!("Map shifted by ({dx}, {dy}, {dz})"));
+}
+
+/// Scale the entire map by (sx, sy) around the bounding-box center, and
+/// scale heights by sz around 0. Returns true if the operation succeeded.
+pub fn expand_map(state: &mut EditorState, sx: f32, sy: f32, sz: f32) -> bool {
+    if sx <= 0.0 || sy <= 0.0 || sz <= 0.0 {
+        state.dialog = Some(Dialog::Notice {
+            title: "Expand/Reduce".into(),
+            message: "Scale factors must be positive.".into(),
+        });
+        return false;
+    }
+    let Some(map) = state.map.as_mut() else { return false };
+    if map.vertices.is_empty() {
+        return false;
+    }
+    let (mut min_x, mut max_x, mut min_y, mut max_y) =
+        (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+    for v in &map.vertices {
+        min_x = min_x.min(v.x as i32);
+        max_x = max_x.max(v.x as i32);
+        min_y = min_y.min(v.y as i32);
+        max_y = max_y.max(v.y as i32);
+    }
+    let cx = (min_x + max_x) as f32 * 0.5;
+    let cy = (min_y + max_y) as f32 * 0.5;
+    let scale_xy = |v: &mut crate::wad::Vertex| {
+        let nx = (cx + ((v.x as f32) - cx) * sx).round() as i32;
+        let ny = (cy + ((v.y as f32) - cy) * sy).round() as i32;
+        v.x = nx.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        v.y = ny.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    };
+    for v in map.vertices.iter_mut() {
+        scale_xy(v);
+    }
+    for t in map.things.iter_mut() {
+        let nx = (cx + ((t.x as f32) - cx) * sx).round() as i32;
+        let ny = (cy + ((t.y as f32) - cy) * sy).round() as i32;
+        t.x = nx.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        t.y = ny.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    }
+    for s in map.sectors.iter_mut() {
+        let nf = (s.floor_height as f32 * sz).round() as i32;
+        let nc = (s.ceiling_height as f32 * sz).round() as i32;
+        s.floor_height = nf.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        s.ceiling_height = nc.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    }
+    state.is_dirty = true;
+    state.status_message = Some(format!("Map scaled by ({sx:.2}, {sy:.2}, {sz:.2})"));
+    true
+}
+
+/// Apply `new_light = old_light * a/100 + b` per-sector, clamped to 0..255.
+/// Matches the EdMap "Light adjustment" formula exactly.
+pub fn light_adjust(state: &mut EditorState, a: i32, b: i32) {
+    let Some(map) = state.map.as_mut() else { return };
+    for s in map.sectors.iter_mut() {
+        let v = (s.light_level as i32 * a) / 100 + b;
+        s.light_level = v.clamp(0, 255) as i16;
+    }
+    state.is_dirty = true;
+    state.status_message = Some(format!("Light adjusted: light = old × {a}/100 + {b}"));
+}
+
+// ---------------- Automatic Lift / Teleporter ----------------
+
+/// DOOM teleporter destination thing-type code (per the public DOOM thing table).
+const THING_TELEPORT_DESTINATION: u16 = 14;
+
+/// DOOM teleport linedef-action special: WR Teleport.
+const TELEPORT_SPECIAL_WR: u16 = 97;
+
+fn next_unused_tag(map: &crate::wad::MapData) -> u16 {
+    let mut max = 0u16;
+    for s in &map.sectors {
+        if s.tag > max {
+            max = s.tag;
+        }
+    }
+    for ld in &map.linedefs {
+        if ld.sector_tag > max {
+            max = ld.sector_tag;
+        }
+    }
+    max.saturating_add(1)
+}
+
+fn lift_special(repeatable: bool, fast: bool) -> u16 {
+    // 62  S1  switch lift, once, normal
+    // 88  WR  walk lift, repeatable, normal
+    // 121 W1  walk lift, once, fast
+    // 123 SR  switch lift, repeatable, fast
+    match (repeatable, fast) {
+        (true, false) => 88,
+        (true, true) => 123,
+        (false, false) => 62,
+        (false, true) => 121,
+    }
+}
+
+/// Convert the selected sector into a triggered lift. Boundary linedefs (2-sided
+/// where exactly one side is the selected sector) get the lift action with a
+/// fresh tag matching the sector. Returns the count of linedefs that got the
+/// action.
+pub fn create_lift(state: &mut EditorState, repeatable: bool, fast: bool) -> usize {
+    if state.mode != SelectionMode::Sector || state.selection.len() != 1 {
+        state.dialog = Some(Dialog::Notice {
+            title: "Lift".into(),
+            message: "Select exactly one sector first.".into(),
+        });
+        return 0;
+    }
+    let target = state.selection[0] as u16;
+    let Some(map) = state.map.as_mut() else { return 0 };
+    if (target as usize) >= map.sectors.len() {
+        return 0;
+    }
+    let new_tag = next_unused_tag(map);
+    let special = lift_special(repeatable, fast);
+
+    map.sectors[target as usize].tag = new_tag;
+
+    let mut count = 0usize;
+    for ld in map.linedefs.iter_mut() {
+        if !ld.is_two_sided() || ld.back_sidedef == LineDef::NO_SIDEDEF {
+            continue;
+        }
+        let front = map.sidedefs.get(ld.front_sidedef as usize).map(|sd| sd.sector);
+        let back = map.sidedefs.get(ld.back_sidedef as usize).map(|sd| sd.sector);
+        let is_boundary = match (front, back) {
+            (Some(f), Some(b)) => (f == target) ^ (b == target),
+            _ => false,
+        };
+        if is_boundary {
+            ld.special_type = special;
+            ld.sector_tag = new_tag;
+            count += 1;
+        }
+    }
+
+    if count == 0 {
+        state.dialog = Some(Dialog::Notice {
+            title: "Lift".into(),
+            message: "Sector has no 2-sided boundary; nothing to trigger.".into(),
+        });
+        // Roll back the tag mutation since the lift won't function.
+        if let Some(s) = state.map.as_mut().and_then(|m| m.sectors.get_mut(target as usize)) {
+            s.tag = 0;
+        }
+        return 0;
+    }
+
+    state.is_dirty = true;
+    state.status_message = Some(format!(
+        "Lift: special {special} on {count} linedef(s) ({}, {})",
+        if repeatable { "repeatable" } else { "once" },
+        if fast { "fast" } else { "normal" }
+    ));
+    count
+}
+
+/// Pair two selected sectors as a teleporter. Each gets a fresh tag and a
+/// destination thing at its centroid; each one's non-shared 2-sided boundary
+/// linedefs receive a teleport action pointing at the OTHER pad's tag.
+pub fn create_teleporter(state: &mut EditorState) -> bool {
+    if state.mode != SelectionMode::Sector || state.selection.len() != 2 {
+        state.dialog = Some(Dialog::Notice {
+            title: "Teleporter".into(),
+            message: "Select exactly two sectors first (shift-click in Sector mode).".into(),
+        });
+        return false;
+    }
+    let a = state.selection[0] as u16;
+    let b = state.selection[1] as u16;
+    if a == b {
+        return false;
+    }
+    let centroid_a = sector_centroid_for_idx(state, a as usize);
+    let centroid_b = sector_centroid_for_idx(state, b as usize);
+    let Some(map) = state.map.as_mut() else { return false };
+
+    let tag_a = next_unused_tag(map);
+    // Compute a second fresh tag that doesn't collide with tag_a.
+    let tag_b = {
+        let mut t = tag_a.saturating_add(1);
+        while sector_or_linedef_uses_tag(map, t) || t == tag_a {
+            t = t.saturating_add(1);
+            if t == 0 {
+                break; // wrapped — give up and use whatever we have
+            }
+        }
+        t
+    };
+
+    map.sectors[a as usize].tag = tag_a;
+    map.sectors[b as usize].tag = tag_b;
+
+    // Place destination things at each centroid.
+    if let Some((cx, cy)) = centroid_a {
+        map.things.push(crate::wad::Thing {
+            x: cx.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16,
+            y: cy.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16,
+            angle: 0,
+            thing_type: THING_TELEPORT_DESTINATION,
+            flags: 7,
+        });
+    }
+    if let Some((cx, cy)) = centroid_b {
+        map.things.push(crate::wad::Thing {
+            x: cx.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16,
+            y: cy.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16,
+            angle: 0,
+            thing_type: THING_TELEPORT_DESTINATION,
+            flags: 7,
+        });
+    }
+
+    let mut count = 0usize;
+    for ld in map.linedefs.iter_mut() {
+        if !ld.is_two_sided() || ld.back_sidedef == LineDef::NO_SIDEDEF {
+            continue;
+        }
+        let front = map.sidedefs.get(ld.front_sidedef as usize).map(|sd| sd.sector);
+        let back = map.sidedefs.get(ld.back_sidedef as usize).map(|sd| sd.sector);
+        let (Some(f), Some(bk)) = (front, back) else { continue };
+
+        // Skip the linedef directly between the two pads (would teleport to/from
+        // each other infinitely if both sides were tagged).
+        if (f == a && bk == b) || (f == b && bk == a) {
+            continue;
+        }
+        // Sector A's boundary linedefs (one side a, other side != b) → tag_b
+        // Sector B's boundary linedefs (one side b, other side != a) → tag_a
+        let target_tag = if (f == a) ^ (bk == a) {
+            Some(tag_b)
+        } else if (f == b) ^ (bk == b) {
+            Some(tag_a)
+        } else {
+            None
+        };
+        if let Some(t) = target_tag {
+            ld.special_type = TELEPORT_SPECIAL_WR;
+            ld.sector_tag = t;
+            count += 1;
+        }
+    }
+
+    state.is_dirty = true;
+    state.status_message = Some(format!(
+        "Teleporter: tags {tag_a}<->{tag_b}, {count} linedef(s) wired"
+    ));
+    true
+}
+
+fn sector_centroid_for_idx(state: &EditorState, sector_idx: usize) -> Option<(f32, f32)> {
+    let map = state.map.as_ref()?;
+    sector_centroid(map, sector_idx)
+}
+
+fn sector_or_linedef_uses_tag(map: &crate::wad::MapData, tag: u16) -> bool {
+    map.sectors.iter().any(|s| s.tag == tag)
+        || map.linedefs.iter().any(|ld| ld.sector_tag == tag)
 }
