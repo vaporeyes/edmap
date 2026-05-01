@@ -1,13 +1,28 @@
-// ABOUTME: Main entry point for the Rust backend of the EdMap Next-Gen Tauri app.
-// ABOUTME: Initializes the Tauri runtime and sets up IPC command handlers.
+// ABOUTME: Entry point for the egui-based EdMap rebuild.
+// ABOUTME: Sets up eframe with VGA-styled visuals and launches the app.
 
-#![cfg_attr(
-    all(not(debug_assertions), target_os = "windows"),
-    windows_subsystem = "windows"
-)]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-fn main() {
-    tauri::Builder::default()
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+mod app;
+mod theme;
+mod wad;
+
+use app::EdMapApp;
+
+fn main() -> eframe::Result<()> {
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("EdMap v1.40")
+            .with_inner_size([960.0, 720.0])
+            .with_min_inner_size([640.0, 480.0]),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "EdMap",
+        native_options,
+        Box::new(|cc| {
+            theme::install(&cc.egui_ctx);
+            Ok(Box::new(EdMapApp::new()))
+        }),
+    )
 }
