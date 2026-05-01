@@ -2,6 +2,7 @@
 // ABOUTME: Owns the editor state (current WAD, current map, selection, view transform).
 
 mod commands;
+mod dialog;
 mod keybindings;
 mod menu;
 mod sidebar;
@@ -11,7 +12,7 @@ mod viewport;
 use eframe::egui;
 
 use crate::theme;
-pub use state::EditorState;
+pub use state::{EditorState, SelectionMode};
 
 pub struct EdMapApp {
     state: EditorState,
@@ -45,6 +46,8 @@ impl eframe::App for EdMapApp {
         // Cascading menu bar lives across the top of the viewport row, sourced from
         // sidebar state so we can keep menu open across frames.
         menu::draw_open_menu(ctx, &mut self.state);
+        // Modals draw last so they're above everything else.
+        dialog::draw(ctx, &mut self.state);
     }
 }
 

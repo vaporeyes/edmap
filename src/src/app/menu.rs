@@ -189,15 +189,38 @@ pub fn items_for(menu: &str) -> &'static [(&'static str, &'static str)] {
 }
 
 pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
+    use super::state::Dialog;
     match (menu, item) {
+        ("Info", "About EdMap") => state.dialog = Some(Dialog::About),
+        ("Info", "Map Information") => state.dialog = Some(Dialog::MapInformation),
+        ("Info", "System Information") => state.dialog = Some(Dialog::SystemInformation),
+        ("File (map)", "New map") => {
+            state.map = None;
+            state.wad = None;
+            state.wad_path = None;
+            state.selection.clear();
+            state.view_center = egui::pos2(0.0, 0.0);
+            state.view_zoom = 1.0;
+        }
         ("File (map)", "Open map file") => open_wad_picker(state),
         ("File (map)", "Quit to DOS") => std::process::exit(0),
+        ("WAD list", "List WADs") => state.dialog = Some(Dialog::WadList),
+        ("WAD list", "Add PWAD file") => open_wad_picker(state),
         ("Edit", "Next object") => super::commands::cycle_selection(state, 1),
         ("Edit", "Previous object") => super::commands::cycle_selection(state, -1),
+        ("Edit", "Goto object") => {
+            state.dialog = Some(Dialog::GotoObject { input: String::new() });
+        }
         ("Display", "Grid on/off") => state.grid_visible = !state.grid_visible,
         ("Display", "Origin on/off") => state.origin_visible = !state.origin_visible,
         ("Display", "Center map") => super::commands::center_map(state),
         ("Display", "Refresh display") => state.status_message = None,
+        ("Display", "Snap/grid") => {
+            state.dialog = Some(Dialog::SnapGrid {
+                grid: state.grid_size.to_string(),
+                snap: state.snap_size.to_string(),
+            });
+        }
         _ => {
             state.status_message = Some(format!("[{menu}] {item}: not implemented yet"));
         }
@@ -213,15 +236,32 @@ fn open_wad_picker(state: &mut EditorState) {
     };
     match Wad::from_path(&path) {
         Ok(wad) => {
-            let map = wad.map_names().first().cloned().and_then(|name| wad.load_map(&name).ok());
+            let maps = wad.map_names();
             state.wad_path = Some(path);
             state.wad = Some(wad);
-            state.map = map;
-            if state.map.is_some() {
-                state.view_center = compute_map_center(state);
-                state.view_zoom = compute_initial_zoom(state);
-            }
+            state.map = None;
+            state.selection.clear();
             state.status_message = None;
+            match maps.len() {
+                0 => {
+                    state.status_message = Some("WAD\\No maps in this file.".into());
+                }
+                1 => {
+                    if let Some(wad) = &state.wad {
+                        if let Ok(m) = wad.load_map(&maps[0]) {
+                            state.map = Some(m);
+                            state.view_center = compute_map_center(state);
+                            state.view_zoom = compute_initial_zoom(state);
+                        }
+                    }
+                }
+                _ => {
+                    state.dialog = Some(super::state::Dialog::OpenMapPicker {
+                        maps,
+                        selected: 0,
+                    });
+                }
+            }
         }
         Err(e) => {
             state.status_message = Some(format!("PWAD Load: {e}"));

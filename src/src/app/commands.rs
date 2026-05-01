@@ -51,3 +51,51 @@ pub fn set_mode(state: &mut EditorState, mode: SelectionMode) {
         state.selection.clear();
     }
 }
+
+/// Move the viewport so the first selected object sits in the center.
+/// Used by Goto and Find. Leaves zoom alone.
+pub fn focus_on_selection(state: &mut EditorState) {
+    let Some(map) = &state.map else { return };
+    let Some(&idx) = state.selection.first() else { return };
+    let world = match state.mode {
+        SelectionMode::Vertex => map.vertices.get(idx).map(|v| (v.x as f32, v.y as f32)),
+        SelectionMode::LineDef => map.linedefs.get(idx).and_then(|ld| {
+            let a = map.vertices.get(ld.start_vertex as usize)?;
+            let b = map.vertices.get(ld.end_vertex as usize)?;
+            Some(((a.x + b.x) as f32 * 0.5, (a.y + b.y) as f32 * 0.5))
+        }),
+        SelectionMode::Sector => sector_centroid(map, idx),
+        SelectionMode::Thing => map.things.get(idx).map(|t| (t.x as f32, t.y as f32)),
+    };
+    if let Some((x, y)) = world {
+        state.view_center = egui::pos2(x, y);
+    }
+}
+
+fn sector_centroid(map: &crate::wad::MapData, sector_idx: usize) -> Option<(f32, f32)> {
+    // Average all linedef-endpoint vertices that face this sector via SideDefs.
+    let mut sum = (0i64, 0i64);
+    let mut count = 0u32;
+    for ld in &map.linedefs {
+        for sd_idx in [ld.front_sidedef, ld.back_sidedef] {
+            if sd_idx == crate::wad::LineDef::NO_SIDEDEF {
+                continue;
+            }
+            let Some(sd) = map.sidedefs.get(sd_idx as usize) else { continue };
+            if sd.sector as usize != sector_idx {
+                continue;
+            }
+            for vi in [ld.start_vertex, ld.end_vertex] {
+                if let Some(v) = map.vertices.get(vi as usize) {
+                    sum.0 += v.x as i64;
+                    sum.1 += v.y as i64;
+                    count += 1;
+                }
+            }
+        }
+    }
+    if count == 0 {
+        return None;
+    }
+    Some((sum.0 as f32 / count as f32, sum.1 as f32 / count as f32))
+}

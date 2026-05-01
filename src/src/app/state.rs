@@ -5,6 +5,20 @@ use std::path::PathBuf;
 
 use crate::wad::{MapData, Wad};
 
+/// Modal dialog currently shown over the viewport. Variants own transient
+/// input state so the dialog can be drawn statelessly each frame.
+#[derive(Debug, Clone)]
+pub enum Dialog {
+    About,
+    MapInformation,
+    SystemInformation,
+    SnapGrid { grid: String, snap: String },
+    GotoObject { input: String },
+    WadList,
+    OpenMapPicker { maps: Vec<String>, selected: usize },
+    Notice { title: String, message: String },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionMode {
     Vertex,
@@ -39,6 +53,7 @@ pub struct EditorState {
     pub cursor_world: egui::Pos2,
     pub open_menu: Option<&'static str>,
     pub status_message: Option<String>,
+    pub dialog: Option<Dialog>,
 }
 
 impl Default for EditorState {
@@ -58,6 +73,7 @@ impl Default for EditorState {
             cursor_world: egui::pos2(0.0, 0.0),
             open_menu: None,
             status_message: None,
+            dialog: None,
         }
     }
 }
