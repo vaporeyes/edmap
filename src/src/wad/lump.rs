@@ -58,6 +58,32 @@ impl Wad {
         self.directory.iter().find(|e| e.name == name)
     }
 
+    pub fn lump_bytes_by_name(&self, name: &str) -> Option<&[u8]> {
+        self.find_lump(name).map(|e| self.lump_bytes(e))
+    }
+
+    /// Names of all non-marker lumps strictly between `start_marker` and
+    /// `end_marker` (e.g. F_START..F_END for flats, S_START..S_END for sprites).
+    /// Multiple ranges with the same markers are concatenated.
+    pub fn lumps_between(&self, start_marker: &str, end_marker: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut inside = false;
+        for entry in &self.directory {
+            if entry.name == start_marker {
+                inside = true;
+                continue;
+            }
+            if entry.name == end_marker {
+                inside = false;
+                continue;
+            }
+            if inside && entry.size != 0 {
+                out.push(entry.name.clone());
+            }
+        }
+        out
+    }
+
     /// All map names found in the directory (entries that are zero-sized markers
     /// matching ExMy or MAPxx and followed by THINGS).
     pub fn map_names(&self) -> Vec<String> {

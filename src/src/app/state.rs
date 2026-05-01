@@ -19,6 +19,14 @@ pub enum Dialog {
     Notice { title: String, message: String },
 }
 
+/// Currently-shown tab in the texture viewer (F10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewerCategory {
+    Walls = 0,
+    Flats = 1,
+    Sprites = 2,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionMode {
     Vertex,
@@ -54,6 +62,8 @@ pub struct EditorState {
     pub open_menu: Option<&'static str>,
     pub status_message: Option<String>,
     pub dialog: Option<Dialog>,
+    pub viewer_open: bool,
+    pub viewer_category: ViewerCategory,
 }
 
 impl Default for EditorState {
@@ -74,6 +84,8 @@ impl Default for EditorState {
             open_menu: None,
             status_message: None,
             dialog: None,
+            viewer_open: false,
+            viewer_category: ViewerCategory::Walls,
         }
     }
 }

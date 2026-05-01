@@ -42,7 +42,7 @@ fn menu_list(ui: &mut egui::Ui, state: &mut EditorState) {
     for &name in MENU_ORDER {
         let is_open = state.open_menu == Some(name);
 
-        let desired = egui::vec2(ui.available_width(), 15.0);
+        let desired = egui::vec2(ui.available_width(), 16.0);
         let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click());
         let painter = ui.painter_at(rect);
 
@@ -50,12 +50,9 @@ fn menu_list(ui: &mut egui::Ui, state: &mut EditorState) {
         let fg = if is_open { theme::MENU_HILITE_FG } else { theme::MENU_FG };
         painter.rect_filled(rect, 0.0, bg);
 
-        // 1-pixel depressed edge along the bottom of every row to give the button look.
-        painter.hline(
-            rect.left()..=rect.right(),
-            rect.bottom() - 1.0,
-            egui::Stroke::new(1.0, theme::MENU_EDGE_DARK),
-        );
+        // Turbo-Vision raised-button bevel: bright top+left, dark bottom+right.
+        // Inverted when the row is "pressed" (active/open).
+        crate::theme::draw_bevel(&painter, rect, is_open);
 
         let font = egui::FontId::new(12.0, egui::FontFamily::Monospace);
         painter.text(

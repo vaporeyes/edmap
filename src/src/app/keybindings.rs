@@ -99,8 +99,14 @@ pub fn dispatch(ctx: &egui::Context, state: &mut EditorState) {
                 commands::set_mode(state, next);
             }
             if input.key_pressed(Key::Escape) {
-                state.open_menu = None;
-                state.status_message = None;
+                if state.viewer_open {
+                    state.viewer_open = false;
+                } else if state.dialog.is_some() {
+                    state.dialog = None;
+                } else {
+                    state.open_menu = None;
+                    state.status_message = None;
+                }
             }
         }
 

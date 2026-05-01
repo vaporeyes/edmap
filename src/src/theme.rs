@@ -19,7 +19,7 @@ pub const VGA_YELLOW: Color32 = Color32::from_rgb(0xFF, 0xFF, 0x55);
 pub const VGA_WHITE: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
 
 // Sidebar background — dark blue panel from the screenshot.
-pub const SIDEBAR_BG: Color32 = Color32::from_rgb(0x00, 0x00, 0x2A);
+pub const SIDEBAR_BG: Color32 = Color32::from_rgb(0x14, 0x28, 0x8e);
 // Menu rows + cascade panels — Turbo-Vision-style gray buttons.
 pub const MENU_BG: Color32 = VGA_GRAY;
 pub const MENU_FG: Color32 = VGA_BLACK;
@@ -29,8 +29,9 @@ pub const MENU_HILITE_FG: Color32 = VGA_WHITE;
 // 1-pixel "depressed" edges between menu rows.
 pub const MENU_EDGE_DARK: Color32 = VGA_DARK_GRAY;
 pub const MENU_EDGE_LIGHT: Color32 = VGA_WHITE;
-// Map info box background (yellow MAP 1 on solid blue).
-pub const INFO_BOX_BG: Color32 = VGA_BLUE;
+// Map info box uses the same blue as the rest of the sidebar so the whole
+// info column reads as one continuous panel (matches original EdMap).
+pub const INFO_BOX_BG: Color32 = SIDEBAR_BG;
 // Viewport background — pure black with grid dots painted on top.
 pub const VIEWPORT_BG: Color32 = VGA_BLACK;
 // Grid dot color.
@@ -41,6 +42,41 @@ pub const LINEDEF_TWO_SIDED: Color32 = VGA_GRAY;
 pub const LINEDEF_SELECTED: Color32 = VGA_BRIGHT_RED;
 pub const VERTEX_DOT: Color32 = VGA_BRIGHT_GREEN;
 pub const THING_MARK: Color32 = VGA_BRIGHT_CYAN;
+
+/// Draw a 1-pixel Turbo-Vision-style bevel onto a button rectangle.
+/// `pressed = false`: bright top+left, dark bottom+right (raised look).
+/// `pressed = true` : dark top+left, bright bottom+right (depressed look).
+pub fn draw_bevel(painter: &egui::Painter, rect: egui::Rect, pressed: bool) {
+    let (light, dark) = if pressed {
+        (MENU_EDGE_DARK, MENU_EDGE_LIGHT)
+    } else {
+        (MENU_EDGE_LIGHT, MENU_EDGE_DARK)
+    };
+    // Top
+    painter.hline(
+        rect.left()..=rect.right(),
+        rect.top(),
+        egui::Stroke::new(1.0, light),
+    );
+    // Left
+    painter.vline(
+        rect.left(),
+        rect.top()..=rect.bottom(),
+        egui::Stroke::new(1.0, light),
+    );
+    // Bottom
+    painter.hline(
+        rect.left()..=rect.right(),
+        rect.bottom() - 1.0,
+        egui::Stroke::new(1.0, dark),
+    );
+    // Right
+    painter.vline(
+        rect.right() - 1.0,
+        rect.top()..=rect.bottom(),
+        egui::Stroke::new(1.0, dark),
+    );
+}
 
 pub fn install(ctx: &egui::Context) {
     let mut style = Style::default();

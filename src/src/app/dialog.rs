@@ -6,7 +6,6 @@ use eframe::egui::{self, Align2, Color32, RichText};
 use super::commands;
 use super::state::{Dialog, EditorState};
 use crate::theme;
-use crate::wad::Wad;
 
 pub fn draw(ctx: &egui::Context, state: &mut EditorState) {
     let Some(dialog) = state.dialog.clone() else { return };
@@ -22,11 +21,16 @@ pub fn draw(ctx: &egui::Context, state: &mut EditorState) {
             egui::Frame::none()
                 .fill(theme::MENU_BG)
                 .stroke(egui::Stroke::new(1.0, theme::VGA_BLACK))
-                .inner_margin(egui::Margin::same(0.0))
+                .inner_margin(egui::Margin::same(2.0))
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                     let max_width = (screen_rect.width() * 0.6).min(560.0).max(280.0);
                     ui.set_max_width(max_width);
+
+                    // Bevel the whole window frame so it feels raised off the viewport.
+                    let frame_rect = ui.max_rect();
+                    theme::draw_bevel(&ui.painter().clone(), frame_rect, false);
+
                     title_bar(ui, title);
                     egui::Frame::none()
                         .inner_margin(egui::Margin::same(8.0))
@@ -346,14 +350,15 @@ fn ok_button(ui: &mut egui::Ui, label: &str) -> bool {
 }
 
 fn button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    let desired = egui::vec2(label.len() as f32 * 8.0 + 16.0, 16.0);
+    let desired = egui::vec2(label.len() as f32 * 8.0 + 20.0, 18.0);
     let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click());
     let painter = ui.painter_at(rect);
     let hovered = resp.hovered();
+    let pressed = resp.is_pointer_button_down_on();
     let bg = if hovered { theme::MENU_HILITE_BG } else { theme::MENU_BG };
     let fg = if hovered { theme::MENU_HILITE_FG } else { theme::MENU_FG };
     painter.rect_filled(rect, 0.0, bg);
-    painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, theme::MENU_EDGE_DARK));
+    theme::draw_bevel(&painter, rect, pressed);
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,

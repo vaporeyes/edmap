@@ -11,4 +11,7 @@ pub use error::WadError;
 pub use header::{WadKind, WadHeader, LumpEntry};
 pub use lump::Wad;
 pub use map::{MapData, Vertex, LineDef, SideDef, Sector, Thing, MapName};
-pub use texture::{Palette, PatchName, TextureDef, PatchRef};
+pub use texture::{
+    parse_pnames, parse_textures, Flat, Palette, Patch, PatchName, PatchRef, TextureDef,
+    TextureImage, FLAT_DIM,
+};

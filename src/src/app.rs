@@ -7,26 +7,48 @@ mod keybindings;
 mod menu;
 mod sidebar;
 mod state;
+mod textures;
+mod viewer;
 mod viewport;
 
 use eframe::egui;
 
 use crate::theme;
 pub use state::{EditorState, SelectionMode};
+use textures::TextureBank;
 
 pub struct EdMapApp {
     state: EditorState,
+    /// Texture bank rebuilt whenever the active WAD changes. Keyed by wad path.
+    bank: TextureBank,
+    bank_for_path: Option<std::path::PathBuf>,
 }
 
 impl EdMapApp {
     pub fn new() -> Self {
-        Self { state: EditorState::default() }
+        Self {
+            state: EditorState::default(),
+            bank: TextureBank::default(),
+            bank_for_path: None,
+        }
+    }
+
+    fn refresh_bank_if_needed(&mut self) {
+        if self.state.wad_path == self.bank_for_path {
+            return;
+        }
+        self.bank = match (&self.state.wad, &self.state.wad_path) {
+            (Some(wad), _) => TextureBank::rebuild_from(wad),
+            _ => TextureBank::default(),
+        };
+        self.bank_for_path = self.state.wad_path.clone();
     }
 }
 
 impl eframe::App for EdMapApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         keybindings::dispatch(ctx, &mut self.state);
+        self.refresh_bank_if_needed();
         title_bar(ctx);
 
         egui::SidePanel::left("sidebar")
@@ -46,6 +68,8 @@ impl eframe::App for EdMapApp {
         // Cascading menu bar lives across the top of the viewport row, sourced from
         // sidebar state so we can keep menu open across frames.
         menu::draw_open_menu(ctx, &mut self.state);
+        // Texture viewer (F10) — drawn before modals so dialogs from it overlay correctly.
+        viewer::draw(ctx, &mut self.state, &mut self.bank);
         // Modals draw last so they're above everything else.
         dialog::draw(ctx, &mut self.state);
     }

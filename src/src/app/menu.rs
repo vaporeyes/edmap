@@ -34,10 +34,15 @@ pub fn draw_open_menu(ctx: &egui::Context, state: &mut EditorState) {
             egui::Frame::none()
                 .fill(theme::MENU_BG)
                 .stroke(egui::Stroke::new(1.0, theme::VGA_BLACK))
-                .inner_margin(egui::Margin::same(0.0))
+                .inner_margin(egui::Margin::same(2.0))
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-                    ui.set_min_width(200.0);
+                    ui.set_min_width(220.0);
+
+                    // Raised-window bevel framing the whole cascade panel.
+                    let frame_rect = ui.max_rect();
+                    theme::draw_bevel(&ui.painter().clone(), frame_rect, false);
+
                     cascade_header(ui, open);
                     let items = items_for(open);
                     for (label, hotkey) in items {
@@ -79,7 +84,7 @@ fn cascade_header(ui: &mut egui::Ui, name: &str) {
 }
 
 fn menu_row(ui: &mut egui::Ui, label: &str, hotkey: &str) -> egui::Response {
-    let desired = egui::vec2(ui.available_width(), 15.0);
+    let desired = egui::vec2(ui.available_width(), 16.0);
     let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click());
     let painter = ui.painter_at(rect);
 
@@ -88,13 +93,15 @@ fn menu_row(ui: &mut egui::Ui, label: &str, hotkey: &str) -> egui::Response {
     let fg = if hovered { theme::MENU_HILITE_FG } else { theme::MENU_FG };
 
     painter.rect_filled(rect, 0.0, bg);
+    // Pressed bevel when hovered (about-to-click look) so the row "depresses".
+    theme::draw_bevel(&painter, rect, hovered);
 
     let font = egui::FontId::new(12.0, egui::FontFamily::Monospace);
-    let label_pos = egui::pos2(rect.left() + 6.0, rect.center().y);
+    let label_pos = egui::pos2(rect.left() + 8.0, rect.center().y);
     painter.text(label_pos, egui::Align2::LEFT_CENTER, label, font.clone(), fg);
 
     if !hotkey.is_empty() {
-        let hk_pos = egui::pos2(rect.right() - 6.0, rect.center().y);
+        let hk_pos = egui::pos2(rect.right() - 8.0, rect.center().y);
         painter.text(hk_pos, egui::Align2::RIGHT_CENTER, hotkey, font, fg);
     }
     resp
@@ -215,6 +222,9 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
         ("Display", "Origin on/off") => state.origin_visible = !state.origin_visible,
         ("Display", "Center map") => super::commands::center_map(state),
         ("Display", "Refresh display") => state.status_message = None,
+        ("Display", "Viewer") => {
+            state.viewer_open = !state.viewer_open;
+        }
         ("Display", "Snap/grid") => {
             state.dialog = Some(Dialog::SnapGrid {
                 grid: state.grid_size.to_string(),
