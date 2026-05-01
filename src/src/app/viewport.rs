@@ -90,8 +90,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
                 color,
             );
         }
-        // Things (X markers).
+        // Things (X markers). Filtered by category if state.thing_filter has any
+        // unchecked entries; bbox overlay rendered when state.things_bbox_visible.
         for (i, t) in map.things.iter().enumerate() {
+            let cat = super::things_table::category_of(t.thing_type);
+            if !state.thing_filter[cat.idx()] {
+                continue;
+            }
             let p = to_screen(egui::pos2(t.x as f32, t.y as f32));
             let selected = state.mode == SelectionMode::Thing && state.selection.contains(&i);
             let hovered = matches!(hover, Some(Hover::Thing(h)) if h == i);
@@ -100,6 +105,17 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
             let stroke = Stroke::new(if selected || hovered { 2.0 } else { 1.0 }, color);
             painter.line_segment([p + egui::vec2(-s, -s), p + egui::vec2(s, s)], stroke);
             painter.line_segment([p + egui::vec2(-s, s), p + egui::vec2(s, -s)], stroke);
+
+            if state.things_bbox_visible {
+                let r = super::things_table::radius_of(t.thing_type) as f32;
+                let r_screen = r * state.view_zoom;
+                let bbox = egui::Rect::from_center_size(p, egui::vec2(r_screen * 2.0, r_screen * 2.0));
+                painter.rect_stroke(
+                    bbox,
+                    0.0,
+                    Stroke::new(1.0, theme::VGA_DARK_GRAY),
+                );
+            }
         }
     } else {
         let center = available.center();

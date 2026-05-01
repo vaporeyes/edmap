@@ -8,8 +8,10 @@ mod hittest;
 mod keybindings;
 mod menu;
 mod sidebar;
+mod picker_data;
 mod state;
 mod textures;
+mod things_table;
 mod viewer;
 mod viewport;
 

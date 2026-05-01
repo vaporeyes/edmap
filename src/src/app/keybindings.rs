@@ -114,6 +114,40 @@ pub fn dispatch(ctx: &egui::Context, state: &mut EditorState) {
             if input.key_pressed(Key::Enter) && state.dialog.is_none() && !state.viewer_open {
                 commands::open_properties(state);
             }
+            // F = flip selected linedef(s) — only meaningful in LineDef mode.
+            if input.key_pressed(Key::F) {
+                commands::flip_selected_linedefs(state);
+            }
+            // A = auto-align textures along a chain (LineDef mode).
+            if input.key_pressed(Key::A) && state.mode == SelectionMode::LineDef {
+                commands::auto_align_textures(state);
+            }
+            // C = clear selection.
+            if input.key_pressed(Key::C) {
+                state.selection.clear();
+            }
+            // [ / ] cycle grid size through DOOM's standard powers-of-two.
+            if input.key_pressed(Key::OpenBracket) {
+                state.grid_size = prev_grid_size(state.grid_size);
+            }
+            if input.key_pressed(Key::CloseBracket) {
+                state.grid_size = next_grid_size(state.grid_size);
+            }
+        }
+        // PgUp/PgDn = sector ceiling ±8; Shift = floor; Ctrl = light ±16.
+        if input.key_pressed(Key::PageUp) {
+            if input.modifiers.ctrl || input.modifiers.command {
+                commands::adjust_selected_light(state, 16);
+            } else {
+                commands::adjust_selected_heights(state, 8, input.modifiers.shift);
+            }
+        }
+        if input.key_pressed(Key::PageDown) {
+            if input.modifiers.ctrl || input.modifiers.command {
+                commands::adjust_selected_light(state, -16);
+            } else {
+                commands::adjust_selected_heights(state, -8, input.modifiers.shift);
+            }
         }
 
         // Zoom keys — keep + / - working regardless of shift.
@@ -132,4 +166,17 @@ pub fn dispatch(ctx: &egui::Context, state: &mut EditorState) {
 
 fn any_modifier(m: &Modifiers) -> bool {
     m.ctrl || m.alt || m.shift || m.command || m.mac_cmd
+}
+
+/// DOOM-standard grid size sequence; cycle through with `[` / `]`.
+const GRID_STEPS: &[i32] = &[1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
+
+fn prev_grid_size(current: i32) -> i32 {
+    let idx = GRID_STEPS.iter().position(|&g| g >= current).unwrap_or(GRID_STEPS.len());
+    GRID_STEPS[idx.saturating_sub(1).max(0)].max(1)
+}
+
+fn next_grid_size(current: i32) -> i32 {
+    let idx = GRID_STEPS.iter().position(|&g| g > current).unwrap_or(GRID_STEPS.len() - 1);
+    GRID_STEPS[idx.min(GRID_STEPS.len() - 1)]
 }

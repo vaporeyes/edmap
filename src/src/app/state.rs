@@ -30,8 +30,13 @@ pub enum Dialog {
     /// Step-through list of issues from the Check menu. `cursor` is the index
     /// of the currently-shown result; "Next/Previous" walk it.
     ErrorList { results: Vec<super::checks::CheckResult>, cursor: usize },
+    /// Categorized picker for thing-types or linedef-actions. Routes the
+    /// chosen code back to whichever Edit dialog is stashed in dialog_pending.
+    Picker { kind: PickerKind, expanded: usize },
     Polygon { sides: String, radius: String },
     Door { key: DoorKey, fast: bool },
+    CurveLineDef { vertices_per_line: String, curve_distance: String, delta_angle: String },
+    ThingsFilter { categories: [bool; 11] },
     Lift { repeatable: bool, fast: bool },
     Teleporter,
     ShiftMap { dx: String, dy: String, dz: String },
@@ -73,6 +78,13 @@ pub enum Dialog {
         top_texture: String,
         side_texture: String,
     },
+}
+
+/// Which categorized picker is active.
+#[derive(Debug, Clone, Copy)]
+pub enum PickerKind {
+    ThingType,
+    LineDefAction,
 }
 
 /// Door key requirement for Door auto-construction.
@@ -200,6 +212,10 @@ pub struct EditorState {
     pub hover_object: Option<usize>,
     pub viewer_open: bool,
     pub viewer_category: ViewerCategory,
+    /// When set, only Things in those categories render. All-true = unfiltered.
+    pub thing_filter: [bool; 11],
+    /// When true, viewport renders each Thing's actual DOOM radius as a square.
+    pub things_bbox_visible: bool,
     /// When `Some`, a click in the viewer grid writes a texture name to
     /// `dialog_pending` and closes the viewer instead of just recording it.
     pub viewer_pick: Option<PickTarget>,
@@ -242,6 +258,8 @@ impl Default for EditorState {
             viewer_category: ViewerCategory::Walls,
             viewer_pick: None,
             dialog_pending: None,
+            thing_filter: [true; 11],
+            things_bbox_visible: false,
             is_dirty: false,
             drag_residual: egui::Vec2::ZERO,
             drag_active: false,

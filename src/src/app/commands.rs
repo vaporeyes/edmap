@@ -418,6 +418,25 @@ pub fn reopen_error_list(state: &mut EditorState) {
 
 // ---------------- Add/split (Ins) ----------------
 
+/// Return the index of the nearest vertex to (x, y) within `range` (inclusive)
+/// world units, or None.
+fn nearest_vertex_within(map: &crate::wad::MapData, x: i16, y: i16, range: i32) -> Option<usize> {
+    let r2 = range * range;
+    let mut best: Option<(usize, i32)> = None;
+    for (i, v) in map.vertices.iter().enumerate() {
+        let dx = v.x as i32 - x as i32;
+        let dy = v.y as i32 - y as i32;
+        let d2 = dx * dx + dy * dy;
+        if d2 <= r2 {
+            match best {
+                Some((_, bd)) if bd <= d2 => {}
+                _ => best = Some((i, d2)),
+            }
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
 /// Snap a world coordinate to the editor's snap_size, rounding to nearest.
 fn snap_world(value: f32, snap: i32) -> i16 {
     let s = snap.max(1) as f32;
@@ -435,11 +454,18 @@ pub fn add_at_cursor(state: &mut EditorState) {
 
     match state.mode {
         SelectionMode::Vertex => {
-            let v = crate::wad::Vertex {
-                x: snap_world(cx, snap),
-                y: snap_world(cy, snap),
-            };
-            map.vertices.push(v);
+            let nx = snap_world(cx, snap);
+            let ny = snap_world(cy, snap);
+            // Stitch: if a vertex already lives at (nx, ny) within stitch range,
+            // select that one instead of creating a duplicate. Default range = 2.
+            if let Some(existing) = nearest_vertex_within(map, nx, ny, 2) {
+                state.selection.clear();
+                state.selection.push(existing);
+                state.status_message =
+                    Some(format!("Stitched to vertex {existing}"));
+                return;
+            }
+            map.vertices.push(crate::wad::Vertex { x: nx, y: ny });
             state.selection.clear();
             state.selection.push(map.vertices.len() - 1);
             state.is_dirty = true;
@@ -1591,4 +1617,267 @@ fn sector_centroid_for_idx(state: &EditorState, sector_idx: usize) -> Option<(f3
 fn sector_or_linedef_uses_tag(map: &crate::wad::MapData, tag: u16) -> bool {
     map.sectors.iter().any(|s| s.tag == tag)
         || map.linedefs.iter().any(|ld| ld.sector_tag == tag)
+}
+
+// ---------------- Single-key utilities (F flip, PgUp/Dn adjustments) ----------------
+
+/// Flip every selected LineDef: swap front/back sidedefs and start/end vertices
+/// so the front side faces the opposite direction.
+pub fn flip_selected_linedefs(state: &mut EditorState) -> usize {
+    if state.mode != SelectionMode::LineDef {
+        return 0;
+    }
+    let Some(map) = state.map.as_mut() else { return 0 };
+    let mut count = 0;
+    for &i in &state.selection {
+        let Some(ld) = map.linedefs.get_mut(i) else { continue };
+        std::mem::swap(&mut ld.start_vertex, &mut ld.end_vertex);
+        std::mem::swap(&mut ld.front_sidedef, &mut ld.back_sidedef);
+        count += 1;
+    }
+    if count > 0 {
+        state.is_dirty = true;
+        state.status_message = Some(format!("Flipped {count} linedef(s)"));
+    }
+    count
+}
+
+/// Adjust ceiling height (Shift inverts to floor) on every selected sector.
+/// dz is the signed delta in DOOM units.
+pub fn adjust_selected_heights(state: &mut EditorState, dz: i32, target_floor: bool) -> usize {
+    if state.mode != SelectionMode::Sector {
+        return 0;
+    }
+    let Some(map) = state.map.as_mut() else { return 0 };
+    let mut count = 0;
+    for &i in &state.selection {
+        let Some(s) = map.sectors.get_mut(i) else { continue };
+        let v = if target_floor {
+            (s.floor_height as i32 + dz).clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        } else {
+            (s.ceiling_height as i32 + dz).clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        };
+        if target_floor {
+            s.floor_height = v;
+        } else {
+            s.ceiling_height = v;
+        }
+        count += 1;
+    }
+    if count > 0 {
+        state.is_dirty = true;
+        let label = if target_floor { "floor" } else { "ceiling" };
+        state.status_message = Some(format!("{label} {dz:+} on {count} sector(s)"));
+    }
+    count
+}
+
+/// Adjust light_level on every selected sector by `db` (clamped 0..255).
+pub fn adjust_selected_light(state: &mut EditorState, db: i32) -> usize {
+    if state.mode != SelectionMode::Sector {
+        return 0;
+    }
+    let Some(map) = state.map.as_mut() else { return 0 };
+    let mut count = 0;
+    for &i in &state.selection {
+        let Some(s) = map.sectors.get_mut(i) else { continue };
+        let v = (s.light_level as i32 + db).clamp(0, 255) as i16;
+        s.light_level = v;
+        count += 1;
+    }
+    if count > 0 {
+        state.is_dirty = true;
+        state.status_message = Some(format!("light {db:+} on {count} sector(s)"));
+    }
+    count
+}
+
+/// Public wrapper around the existing private next_unused_tag, so the dialog
+/// module can offer a "Next Unused" button.
+pub fn next_unused_tag_pub(state: &EditorState) -> u16 {
+    state
+        .map
+        .as_ref()
+        .map(next_unused_tag)
+        .unwrap_or(1)
+}
+
+/// Replace the selected linedef with `n` linedefs forming a smooth circular
+/// arc between the original endpoints. `curve_distance` is the perpendicular
+/// distance from the arc's midpoint to the original linedef. Negative flips
+/// to the opposite side. `delta_angle` is unused for now (we always derive
+/// the arc from chord + sagitta).
+pub fn curve_linedef(state: &mut EditorState, n: usize, curve_distance: f32) {
+    if state.mode != SelectionMode::LineDef || state.selection.len() != 1 {
+        state.dialog = Some(Dialog::Notice {
+            title: "Curve LineDef".into(),
+            message: "Select exactly one LineDef first.".into(),
+        });
+        return;
+    }
+    let n = n.clamp(2, 32);
+    let ld_idx = state.selection[0];
+    let Some(map) = state.map.as_mut() else { return };
+    let Some(ld) = map.linedefs.get(ld_idx).copied() else { return };
+    let (Some(a), Some(b)) = (
+        map.vertices.get(ld.start_vertex as usize).copied(),
+        map.vertices.get(ld.end_vertex as usize).copied(),
+    ) else { return };
+
+    let ax = a.x as f32;
+    let ay = a.y as f32;
+    let bx = b.x as f32;
+    let by = b.y as f32;
+    let dx = bx - ax;
+    let dy = by - ay;
+    let chord_len = (dx * dx + dy * dy).sqrt();
+    if chord_len < 1.0 {
+        return;
+    }
+    // Perpendicular unit vector to (a → b), pointing right of travel direction.
+    let px = -dy / chord_len;
+    let py = dx / chord_len;
+    let s = curve_distance; // sagitta; negative flips side
+    // Circle radius from sagitta and half-chord: R = (h² + (c/2)²) / (2h)
+    let half_c = chord_len * 0.5;
+    let r = if s.abs() < 0.001 {
+        return; // straight line — nothing to curve
+    } else {
+        (s * s + half_c * half_c) / (2.0 * s)
+    };
+    // Center of the circle (signed; negative R means center on the OTHER side).
+    let mid_x = (ax + bx) * 0.5;
+    let mid_y = (ay + by) * 0.5;
+    let cx = mid_x + px * (s - r);
+    let cy = mid_y + py * (s - r);
+    let r_abs = r.abs();
+    let theta_a = (ay - cy).atan2(ax - cx);
+    let theta_b = (by - cy).atan2(bx - cx);
+    // Choose the short way around (consistent with sagitta sign).
+    let mut sweep = theta_b - theta_a;
+    if r > 0.0 {
+        while sweep <= 0.0 { sweep += std::f32::consts::TAU; }
+        while sweep > std::f32::consts::TAU { sweep -= std::f32::consts::TAU; }
+    } else {
+        while sweep >= 0.0 { sweep -= std::f32::consts::TAU; }
+        while sweep < -std::f32::consts::TAU { sweep += std::f32::consts::TAU; }
+    }
+
+    // Insert n-1 intermediate vertices, then rewrite the linedefs.
+    let mut intermediate: Vec<u16> = Vec::with_capacity(n - 1);
+    for i in 1..n {
+        let t = i as f32 / n as f32;
+        let theta = theta_a + sweep * t;
+        let vx = (cx + r_abs * theta.cos()).round() as i32;
+        let vy = (cy + r_abs * theta.sin()).round() as i32;
+        let vx = vx.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let vy = vy.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        // Stitch to nearest existing vertex within 2 units.
+        let idx = if let Some(existing) = nearest_vertex_within(map, vx, vy, 2) {
+            existing as u16
+        } else {
+            map.vertices.push(crate::wad::Vertex { x: vx, y: vy });
+            (map.vertices.len() - 1) as u16
+        };
+        intermediate.push(idx);
+    }
+
+    // Rewrite linedef chain: a → m1 → m2 → ... → b, all sharing original ld's
+    // attributes (flags, special, tag, sidedef indices).
+    let original_end = ld.end_vertex;
+    map.linedefs[ld_idx].end_vertex = intermediate[0];
+    for window in intermediate.windows(2) {
+        let new_ld = crate::wad::LineDef {
+            start_vertex: window[0],
+            end_vertex: window[1],
+            ..ld
+        };
+        map.linedefs.push(new_ld);
+    }
+    let last_intermediate = *intermediate.last().unwrap();
+    let final_ld = crate::wad::LineDef {
+        start_vertex: last_intermediate,
+        end_vertex: original_end,
+        ..ld
+    };
+    map.linedefs.push(final_ld);
+
+    state.is_dirty = true;
+    state.status_message = Some(format!("Curved into {n} linedef(s)"));
+}
+
+/// Auto-align textures along a connected chain of linedefs starting from the
+/// selected one. Walks linedefs that share an endpoint AND have the same
+/// middle texture name on the front sidedef. For each linedef in the chain,
+/// sets sidedef.x_offset = (running_offset mod texture_width). Returns count.
+///
+/// Texture width defaults to 64 if the bank doesn't know the texture. For
+/// truly accurate alignment the caller could resolve the width from
+/// TextureBank, but 64 is a reasonable approximation for most DOOM textures.
+pub fn auto_align_textures(state: &mut EditorState) -> usize {
+    if state.mode != SelectionMode::LineDef || state.selection.len() != 1 {
+        state.dialog = Some(Dialog::Notice {
+            title: "Auto-align".into(),
+            message: "Select exactly one LineDef first.".into(),
+        });
+        return 0;
+    }
+    let start_ld_idx = state.selection[0];
+    let Some(map) = state.map.as_mut() else { return 0 };
+    let Some(start_ld) = map.linedefs.get(start_ld_idx).copied() else { return 0 };
+    if start_ld.front_sidedef == LineDef::NO_SIDEDEF {
+        return 0;
+    }
+    let Some(start_sd) = map.sidedefs.get(start_ld.front_sidedef as usize).cloned() else { return 0 };
+    let target_tex = start_sd.middle_texture.clone();
+    if target_tex.is_empty() || target_tex == "-" {
+        state.status_message = Some("No texture to align".into());
+        return 0;
+    }
+    let texture_width: i32 = 64; // safe default; matches most DOOM textures.
+
+    // BFS from start linedef, walking neighbors that share an endpoint AND
+    // whose front sidedef carries the same middle texture.
+    let mut chain: Vec<usize> = vec![start_ld_idx];
+    let mut visited: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    visited.insert(start_ld_idx);
+
+    // For chain ordering: walk forward from end_vertex, then prepend backward
+    // walk from start_vertex. Simple: do two directional walks.
+    let mut tail_vertex = start_ld.end_vertex;
+    loop {
+        let next = map.linedefs.iter().enumerate().find(|(i, ld)| {
+            !visited.contains(i)
+                && (ld.start_vertex == tail_vertex || ld.end_vertex == tail_vertex)
+                && ld.front_sidedef != LineDef::NO_SIDEDEF
+                && map.sidedefs.get(ld.front_sidedef as usize).map(|sd| sd.middle_texture == target_tex).unwrap_or(false)
+        });
+        let Some((next_idx, next_ld)) = next.map(|(i, ld)| (i, *ld)) else { break };
+        visited.insert(next_idx);
+        chain.push(next_idx);
+        tail_vertex = if next_ld.start_vertex == tail_vertex { next_ld.end_vertex } else { next_ld.start_vertex };
+    }
+
+    // Walk the chain assigning offsets.
+    let mut offset: i32 = start_sd.x_offset as i32;
+    let mut count = 0;
+    for &i in &chain {
+        let Some(ld) = map.linedefs.get(i).copied() else { continue };
+        let Some((Some(va), Some(vb))) = Some((
+            map.vertices.get(ld.start_vertex as usize).copied(),
+            map.vertices.get(ld.end_vertex as usize).copied(),
+        )) else { continue };
+        let dx = (vb.x - va.x) as f32;
+        let dy = (vb.y - va.y) as f32;
+        let length = (dx * dx + dy * dy).sqrt() as i32;
+        if let Some(sd) = map.sidedefs.get_mut(ld.front_sidedef as usize) {
+            sd.x_offset = (offset.rem_euclid(texture_width)) as i16;
+            count += 1;
+        }
+        offset = offset.saturating_add(length);
+    }
+
+    state.is_dirty = true;
+    state.status_message = Some(format!("Aligned {count} sidedef(s) of {target_tex}"));
+    count
 }

@@ -156,6 +156,7 @@ pub fn items_for(menu: &str) -> &'static [(&'static str, &'static str)] {
         ],
         "Sectors" => &[
             ("Polygon", "Ctrl-P"),
+            ("Curve LineDef", ""),
             ("Rotate", "R"),
             ("Size", "Z"),
             ("Texture style", "Alt-F8"),
@@ -178,6 +179,8 @@ pub fn items_for(menu: &str) -> &'static [(&'static str, &'static str)] {
             ("Origin on/off", "Ctrl-O"),
             ("Center map", ""),
             ("Viewer", "F10"),
+            ("Things filter", ""),
+            ("Thing bounding boxes", ""),
             ("Refresh display", ""),
         ],
         "Check" => &[
@@ -255,6 +258,21 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
                 a: "100".into(),
                 b: "0".into(),
             });
+        }
+        ("Sectors", "Curve LineDef") => {
+            state.dialog = Some(Dialog::CurveLineDef {
+                vertices_per_line: "8".into(),
+                curve_distance: "64".into(),
+                delta_angle: "180".into(),
+            });
+        }
+        ("Display", "Things filter") => {
+            state.dialog = Some(Dialog::ThingsFilter {
+                categories: state.thing_filter,
+            });
+        }
+        ("Display", "Thing bounding boxes") => {
+            state.things_bbox_visible = !state.things_bbox_visible;
         }
         ("Sectors", "Polygon") => {
             state.dialog = Some(Dialog::Polygon {

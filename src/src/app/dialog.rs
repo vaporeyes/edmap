@@ -73,8 +73,14 @@ fn title_for(dialog: &Dialog) -> &'static str {
         Dialog::Notice { .. } => "Notice",
         Dialog::SaveWarning { .. } => "Save warning",
         Dialog::ErrorList { .. } => "Error List",
+        Dialog::Picker { kind, .. } => match kind {
+            super::state::PickerKind::ThingType => "Choose Thing Type",
+            super::state::PickerKind::LineDefAction => "Choose LineDef Action",
+        },
         Dialog::Polygon { .. } => "Polygon",
         Dialog::Door { .. } => "Door",
+        Dialog::CurveLineDef { .. } => "Curve LineDef",
+        Dialog::ThingsFilter { .. } => "Things filter",
         Dialog::Lift { .. } => "Lift",
         Dialog::Teleporter => "Teleporter",
         Dialog::Stairs { .. } => "Stairs",
@@ -101,8 +107,12 @@ fn body(ui: &mut egui::Ui, state: &mut EditorState, dialog: Dialog) -> bool {
         Dialog::Notice { title: _, message } => notice_body(ui, message),
         Dialog::SaveWarning { pending } => save_warning_body(ui, state, pending),
         Dialog::ErrorList { results, cursor } => error_list_body(ui, state, results, cursor),
+        Dialog::Picker { kind, expanded } => picker_body(ui, state, kind, expanded),
         Dialog::Polygon { sides, radius } => polygon_body(ui, state, sides, radius),
         Dialog::Door { key, fast } => door_body(ui, state, key, fast),
+        Dialog::CurveLineDef { vertices_per_line, curve_distance, delta_angle } =>
+            curve_linedef_body(ui, state, vertices_per_line, curve_distance, delta_angle),
+        Dialog::ThingsFilter { categories } => things_filter_body(ui, state, categories),
         Dialog::Lift { repeatable, fast } => lift_body(ui, state, repeatable, fast),
         Dialog::Teleporter => teleporter_body(ui, state),
         Dialog::ShiftMap { dx, dy, dz } => shift_map_body(ui, state, dx, dy, dz),
@@ -814,13 +824,37 @@ fn edit_linedef_body(
         ui.colored_label(theme::MENU_FG, "Flags (bitmask):");
         ui.add(text_box(&mut flags, 6));
     });
+    let mut pick_special = false;
     ui.horizontal(|ui| {
         ui.colored_label(theme::MENU_FG, "Special type:  ");
         ui.add(text_box(&mut special, 6));
+        if button(ui, "Pick…").clicked() {
+            pick_special = true;
+        }
     });
+    if let Ok(code) = special.trim().parse::<u16>() {
+        ui.colored_label(
+            theme::VGA_DARK_GRAY,
+            super::picker_data::label_for(super::picker_data::LINEDEF_ACTIONS, code),
+        );
+    }
+    if pick_special {
+        let stashed = Dialog::EditLineDef {
+            idx, flags, special, tag, front_sidedef, back_sidedef,
+        };
+        state.dialog_pending = Some(stashed);
+        state.dialog = Some(Dialog::Picker {
+            kind: super::state::PickerKind::LineDefAction,
+            expanded: 1, // default open: Doors
+        });
+        return true;
+    }
     ui.horizontal(|ui| {
         ui.colored_label(theme::MENU_FG, "Sector tag:    ");
         ui.add(text_box(&mut tag, 6));
+        if button(ui, "Next Unused").clicked() {
+            tag = commands::next_unused_tag_pub(state).to_string();
+        }
     });
     ui.horizontal(|ui| {
         ui.colored_label(theme::MENU_FG, "Front sidedef: ");
@@ -901,6 +935,9 @@ fn edit_sector_body(
     ui.horizontal(|ui| {
         ui.colored_label(theme::MENU_FG, "Tag:           ");
         ui.add(text_box(&mut tag, 6));
+        if button(ui, "Next Unused").clicked() {
+            tag = commands::next_unused_tag_pub(state).to_string();
+        }
     });
     let mut pick_floor = false;
     let mut pick_ceiling = false;
@@ -997,15 +1034,35 @@ fn edit_thing_body(
         ui.colored_label(theme::MENU_FG, "Angle:");
         ui.add(text_box(&mut angle, 6));
     });
+    let mut pick_type = false;
     ui.horizontal(|ui| {
         ui.colored_label(theme::MENU_FG, "Type: ");
         ui.add(text_box(&mut thing_type, 6));
+        if button(ui, "Pick…").clicked() {
+            pick_type = true;
+        }
     });
+    if let Ok(code) = thing_type.trim().parse::<u16>() {
+        ui.colored_label(
+            theme::VGA_DARK_GRAY,
+            super::picker_data::label_for(super::picker_data::THING_TYPES, code),
+        );
+    }
     ui.horizontal(|ui| {
         ui.colored_label(theme::MENU_FG, "Flags:");
         ui.add(text_box(&mut flags, 6));
     });
     ui.add_space(6.0);
+
+    if pick_type {
+        let stashed = Dialog::EditThing { idx, x, y, angle, thing_type, flags };
+        state.dialog_pending = Some(stashed);
+        state.dialog = Some(Dialog::Picker {
+            kind: super::state::PickerKind::ThingType,
+            expanded: 2, // default open category: Monsters
+        });
+        return true;
+    }
 
     let close = ui.horizontal(|ui| {
         let ok = button(ui, "OK").clicked();
@@ -1260,4 +1317,194 @@ fn teleporter_body(ui: &mut egui::Ui, state: &mut EditorState) -> bool {
         cancel
     })
     .inner
+}
+
+// ---------------- Curve LineDef + Things Filter dialog bodies ----------------
+
+fn curve_linedef_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    vertices_per_line: String,
+    curve_distance: String,
+    delta_angle: String,
+) -> bool {
+    let mut vertices_per_line = vertices_per_line;
+    let mut curve_distance = curve_distance;
+    let mut delta_angle = delta_angle;
+    ui.colored_label(theme::MENU_FG, "Replace selected LineDef with a smooth arc.");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Vertices per line:");
+        ui.add(text_box(&mut vertices_per_line, 4));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Curve distance:   ");
+        ui.add(text_box(&mut curve_distance, 6));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Delta angle (deg):");
+        ui.add(text_box(&mut delta_angle, 5));
+    });
+    ui.colored_label(theme::VGA_DARK_GRAY, "(negative curve_distance flips direction)");
+    ui.add_space(6.0);
+    let close = ui.horizontal(|ui| {
+        let ok = button(ui, "OK").clicked();
+        let cancel = button(ui, "cancel").clicked();
+        if ok {
+            let n: usize = vertices_per_line.trim().parse().unwrap_or(8);
+            let d: f32 = curve_distance.trim().parse().unwrap_or(64.0);
+            commands::curve_linedef(state, n, d);
+            return true;
+        }
+        cancel
+    }).inner;
+    if !close {
+        state.dialog = Some(Dialog::CurveLineDef { vertices_per_line, curve_distance, delta_angle });
+    }
+    close
+}
+
+const THING_CATEGORY_LABELS: [&str; 11] = [
+    "Player Starts",
+    "Teleports",
+    "Monsters",
+    "Weapons",
+    "Ammunition",
+    "Health & Armor",
+    "Powerups",
+    "Keys",
+    "Obstacles",
+    "Light Sources",
+    "Decoration",
+];
+
+fn things_filter_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    categories: [bool; 11],
+) -> bool {
+    let mut categories = categories;
+    ui.colored_label(theme::MENU_FG, "Show only Things in checked categories:");
+    ui.add_space(4.0);
+    for (i, label) in THING_CATEGORY_LABELS.iter().enumerate() {
+        ui.checkbox(&mut categories[i], *label);
+    }
+    ui.add_space(6.0);
+    let close = ui.horizontal(|ui| {
+        let ok = button(ui, "OK").clicked();
+        let all = button(ui, "All").clicked();
+        let none = button(ui, "None").clicked();
+        let cancel = button(ui, "cancel").clicked();
+        if all {
+            categories = [true; 11];
+        }
+        if none {
+            categories = [false; 11];
+        }
+        if ok {
+            state.thing_filter = categories;
+            return true;
+        }
+        cancel
+    }).inner;
+    if !close {
+        state.dialog = Some(Dialog::ThingsFilter { categories });
+    }
+    close
+}
+
+// ---------------- Categorized picker (Thing types + LineDef actions) ----------------
+
+fn picker_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    kind: super::state::PickerKind,
+    expanded: usize,
+) -> bool {
+    use super::picker_data::{LINEDEF_ACTIONS, THING_TYPES};
+    let table = match kind {
+        super::state::PickerKind::ThingType => THING_TYPES,
+        super::state::PickerKind::LineDefAction => LINEDEF_ACTIONS,
+    };
+
+    ui.colored_label(theme::MENU_FG, "Click a category to expand, then click an entry.");
+    ui.add_space(4.0);
+
+    let mut new_expanded = expanded;
+    let mut picked: Option<u16> = None;
+
+    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+        for (i, cat) in table.iter().enumerate() {
+            let is_expanded = i == expanded;
+            let prefix = if is_expanded { "▼" } else { "▶" };
+            let cat_label = format!("{prefix} {}", cat.label);
+            if ui
+                .add(
+                    egui::Label::new(
+                        RichText::new(&cat_label).color(theme::VGA_BRIGHT_CYAN).strong(),
+                    )
+                    .sense(egui::Sense::click()),
+                )
+                .clicked()
+            {
+                new_expanded = if is_expanded { usize::MAX } else { i };
+            }
+            if is_expanded {
+                for entry in cat.entries {
+                    let label = format!("    {} — {}", entry.code, entry.label);
+                    if ui
+                        .add(
+                            egui::Label::new(
+                                RichText::new(&label).color(theme::VGA_WHITE),
+                            )
+                            .sense(egui::Sense::click()),
+                        )
+                        .clicked()
+                    {
+                        picked = Some(entry.code);
+                    }
+                }
+            }
+        }
+    });
+    ui.add_space(6.0);
+
+    let close = ui.horizontal(|ui| {
+        let cancel = button(ui, "cancel").clicked();
+        cancel
+    }).inner;
+
+    if let Some(code) = picked {
+        apply_picker_choice(state, kind, code);
+        return true;
+    }
+    if !close {
+        state.dialog = Some(Dialog::Picker { kind, expanded: new_expanded });
+    } else {
+        // cancel — restore stashed dialog if any
+        if let Some(stashed) = state.dialog_pending.take() {
+            state.dialog = Some(stashed);
+            return false; // dialog reopens this frame; don't double-close
+        }
+    }
+    close
+}
+
+fn apply_picker_choice(
+    state: &mut EditorState,
+    kind: super::state::PickerKind,
+    code: u16,
+) {
+    let Some(mut stashed) = state.dialog_pending.take() else { return };
+    match (kind, &mut stashed) {
+        (super::state::PickerKind::ThingType, Dialog::EditThing { thing_type, .. }) => {
+            *thing_type = code.to_string();
+        }
+        (super::state::PickerKind::LineDefAction, Dialog::EditLineDef { special, .. }) => {
+            *special = code.to_string();
+        }
+        _ => {}
+    }
+    state.dialog = Some(stashed);
+    state.status_message = Some(format!("Picked code {code}"));
 }
