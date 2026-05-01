@@ -1,6 +1,7 @@
 // ABOUTME: Top-level egui app — composes title bar, left sidebar, and map viewport.
 // ABOUTME: Owns the editor state (current WAD, current map, selection, view transform).
 
+mod checks;
 mod commands;
 mod dialog;
 mod hittest;

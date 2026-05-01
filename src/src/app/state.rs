@@ -5,6 +5,15 @@ use std::path::PathBuf;
 
 use crate::wad::{MapData, Wad};
 
+/// Action queued behind the Save warning dialog. After the user picks
+/// Yes/No/Cancel we run this to continue (or abandon) the original intent.
+#[derive(Debug, Clone)]
+pub enum PendingAction {
+    Quit,
+    NewMap,
+    OpenWad,
+}
+
 /// Modal dialog currently shown over the viewport. Variants own transient
 /// input state so the dialog can be drawn statelessly each frame.
 #[derive(Debug, Clone)]
@@ -17,6 +26,10 @@ pub enum Dialog {
     WadList,
     OpenMapPicker { maps: Vec<String>, selected: usize },
     Notice { title: String, message: String },
+    SaveWarning { pending: PendingAction },
+    /// Step-through list of issues from the Check menu. `cursor` is the index
+    /// of the currently-shown result; "Next/Previous" walk it.
+    ErrorList { results: Vec<super::checks::CheckResult>, cursor: usize },
 }
 
 /// Currently-shown tab in the texture viewer (F10).
@@ -70,6 +83,11 @@ pub struct EditorState {
     /// integer-coord snap doesn't lose sub-pixel motion across frames.
     pub drag_residual: egui::Vec2,
     pub drag_active: bool,
+    /// Snapshot of the map after the last load or save. Restored by
+    /// Edit > Undo from last save. Cleared when no map is loaded.
+    pub undo_baseline: Option<crate::wad::MapData>,
+    /// Last set of check results (for Ctrl-L "reopen Error List").
+    pub last_check_results: Vec<super::checks::CheckResult>,
 }
 
 impl Default for EditorState {
@@ -95,6 +113,8 @@ impl Default for EditorState {
             is_dirty: false,
             drag_residual: egui::Vec2::ZERO,
             drag_active: false,
+            undo_baseline: None,
+            last_check_results: Vec::new(),
         }
     }
 }

@@ -286,6 +286,7 @@ pub fn save_map(state: &mut EditorState) {
     match result {
         Ok(()) => {
             state.is_dirty = false;
+            state.undo_baseline = state.map.clone();
             state.status_message = Some(format!("Saved to {}", path.display()));
             // Re-read the WAD so subsequent saves see our own writes (and the
             // texture bank picks up any preserved/added asset lumps).
@@ -329,6 +330,7 @@ pub fn save_map_as(state: &mut EditorState) {
                 state.wad = Some(reread);
             }
             state.is_dirty = false;
+            state.undo_baseline = state.map.clone();
             state.status_message = Some(format!("Saved to {}", path.display()));
         }
         Err(e) => {
@@ -338,4 +340,78 @@ pub fn save_map_as(state: &mut EditorState) {
             });
         }
     }
+}
+
+/// Run an action that was queued behind the Save warning dialog.
+pub fn run_pending(state: &mut EditorState, action: &super::state::PendingAction) {
+    use super::state::PendingAction;
+    match action {
+        PendingAction::Quit => std::process::exit(0),
+        PendingAction::NewMap => {
+            state.map = None;
+            state.wad = None;
+            state.wad_path = None;
+            state.selection.clear();
+            state.view_center = egui::pos2(0.0, 0.0);
+            state.view_zoom = 1.0;
+            state.is_dirty = false;
+            state.undo_baseline = None;
+        }
+        PendingAction::OpenWad => {
+            // Caller (menu/keybinding) reroutes through the picker on the next click.
+            // We just clear dirty so the next Open doesn't re-trigger the warning.
+            state.is_dirty = false;
+        }
+    }
+}
+
+/// Helper: if the map has unsaved edits, queue the action behind a SaveWarning
+/// dialog and return false (caller skips the immediate work). Otherwise return
+/// true so the caller can proceed inline.
+pub fn dirty_guard(state: &mut EditorState, pending: super::state::PendingAction) -> bool {
+    if state.is_dirty {
+        state.dialog = Some(super::state::Dialog::SaveWarning { pending });
+        return false;
+    }
+    true
+}
+
+/// Snapshot the current map as the new "last save" baseline. Call after load
+/// and after a successful save.
+pub fn capture_baseline(state: &mut EditorState) {
+    state.undo_baseline = state.map.clone();
+}
+
+/// Edit > Undo from last save — restore the snapshot if available.
+pub fn undo_to_baseline(state: &mut EditorState) {
+    let Some(base) = state.undo_baseline.clone() else {
+        state.dialog = Some(super::state::Dialog::Notice {
+            title: "Undo".into(),
+            message: "No saved baseline to revert to.".into(),
+        });
+        return;
+    };
+    state.map = Some(base);
+    state.selection.clear();
+    state.is_dirty = false;
+}
+
+/// Run a CheckSet against the current map and open the Error List dialog.
+pub fn run_checks(state: &mut EditorState, set: super::checks::CheckSet) {
+    let Some(map) = state.map.as_ref() else {
+        state.dialog = Some(super::state::Dialog::Notice {
+            title: "Check".into(),
+            message: "No map loaded.".into(),
+        });
+        return;
+    };
+    let results = super::checks::run(map, set);
+    state.last_check_results = results.clone();
+    state.dialog = Some(super::state::Dialog::ErrorList { results, cursor: 0 });
+}
+
+/// Reopen the last check results without re-running.
+pub fn reopen_error_list(state: &mut EditorState) {
+    let results = state.last_check_results.clone();
+    state.dialog = Some(super::state::Dialog::ErrorList { results, cursor: 0 });
 }

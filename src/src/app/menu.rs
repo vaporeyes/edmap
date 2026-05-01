@@ -202,26 +202,42 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
         ("Info", "Map Information") => state.dialog = Some(Dialog::MapInformation),
         ("Info", "System Information") => state.dialog = Some(Dialog::SystemInformation),
         ("File (map)", "New map") => {
-            state.map = None;
-            state.wad = None;
-            state.wad_path = None;
-            state.selection.clear();
-            state.view_center = egui::pos2(0.0, 0.0);
-            state.view_zoom = 1.0;
-            state.is_dirty = false;
+            if super::commands::dirty_guard(state, super::state::PendingAction::NewMap) {
+                state.map = None;
+                state.wad = None;
+                state.wad_path = None;
+                state.selection.clear();
+                state.view_center = egui::pos2(0.0, 0.0);
+                state.view_zoom = 1.0;
+                state.is_dirty = false;
+                state.undo_baseline = None;
+            }
         }
-        ("File (map)", "Open map file") => open_wad_picker(state),
+        ("File (map)", "Open map file") => {
+            if super::commands::dirty_guard(state, super::state::PendingAction::OpenWad) {
+                open_wad_picker(state);
+            }
+        }
         ("File (map)", "Save map data") => super::commands::save_map(state),
-        ("File (map)", "Quit to DOS") => std::process::exit(0),
+        ("File (map)", "Quit to DOS") => {
+            if super::commands::dirty_guard(state, super::state::PendingAction::Quit) {
+                std::process::exit(0);
+            }
+        }
         ("WAD list", "Save as PWAD...") => super::commands::save_map_as(state),
         ("WAD list", "List WADs") => state.dialog = Some(Dialog::WadList),
-        ("WAD list", "Add PWAD file") => open_wad_picker(state),
+        ("WAD list", "Add PWAD file") => {
+            if super::commands::dirty_guard(state, super::state::PendingAction::OpenWad) {
+                open_wad_picker(state);
+            }
+        }
         ("Edit", "Next object") => super::commands::cycle_selection(state, 1),
         ("Edit", "Previous object") => super::commands::cycle_selection(state, -1),
         ("Edit", "Goto object") => {
             state.dialog = Some(Dialog::GotoObject { input: String::new() });
         }
         ("Edit", "Delete/merge") => super::commands::delete_selected(state),
+        ("Edit", "Undo from last save") => super::commands::undo_to_baseline(state),
         ("Display", "Grid on/off") => state.grid_visible = !state.grid_visible,
         ("Display", "Origin on/off") => state.origin_visible = !state.origin_visible,
         ("Display", "Center map") => super::commands::center_map(state),
@@ -229,6 +245,13 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
         ("Display", "Viewer") => {
             state.viewer_open = !state.viewer_open;
         }
+        ("Check", "Quick check") => {
+            super::commands::run_checks(state, super::checks::CheckSet::Quick);
+        }
+        ("Check", "Check all") => {
+            super::commands::run_checks(state, super::checks::CheckSet::All);
+        }
+        ("Check", "Error list") => super::commands::reopen_error_list(state),
         ("Display", "Snap/grid") => {
             state.dialog = Some(Dialog::SnapGrid {
                 grid: state.grid_size.to_string(),
@@ -267,6 +290,7 @@ fn open_wad_picker(state: &mut EditorState) {
                             state.map = Some(m);
                             state.view_center = compute_map_center(state);
                             state.view_zoom = compute_initial_zoom(state);
+                            state.undo_baseline = state.map.clone();
                         }
                     }
                 }

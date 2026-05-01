@@ -4,7 +4,7 @@
 use eframe::egui::{self, Align2, Color32, RichText};
 
 use super::commands;
-use super::state::{Dialog, EditorState};
+use super::state::{Dialog, EditorState, PendingAction};
 use crate::theme;
 
 pub fn draw(ctx: &egui::Context, state: &mut EditorState) {
@@ -71,6 +71,8 @@ fn title_for(dialog: &Dialog) -> &'static str {
         Dialog::WadList => "Active PWADs",
         Dialog::OpenMapPicker { .. } => "Open Map",
         Dialog::Notice { .. } => "Notice",
+        Dialog::SaveWarning { .. } => "Save warning",
+        Dialog::ErrorList { .. } => "Error List",
     }
 }
 
@@ -85,7 +87,113 @@ fn body(ui: &mut egui::Ui, state: &mut EditorState, dialog: Dialog) -> bool {
         Dialog::WadList => wad_list_body(ui, state),
         Dialog::OpenMapPicker { maps, selected } => open_map_body(ui, state, maps, selected),
         Dialog::Notice { title: _, message } => notice_body(ui, message),
+        Dialog::SaveWarning { pending } => save_warning_body(ui, state, pending),
+        Dialog::ErrorList { results, cursor } => error_list_body(ui, state, results, cursor),
     }
+}
+
+fn error_list_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    results: Vec<super::checks::CheckResult>,
+    cursor: usize,
+) -> bool {
+    use super::checks::Severity;
+    if results.is_empty() {
+        ui.colored_label(theme::VGA_BRIGHT_GREEN, "No errors detected.");
+        ui.add_space(6.0);
+        return ok_button(ui, "OK");
+    }
+    let cursor = cursor.min(results.len() - 1);
+    let cur = &results[cursor];
+
+    ui.colored_label(theme::MENU_FG, format!("{} of {}", cursor + 1, results.len()));
+    let label_color = match cur.severity {
+        Severity::Error => theme::VGA_BRIGHT_RED,
+        Severity::Warning => theme::VGA_YELLOW,
+    };
+    ui.colored_label(label_color, &cur.label);
+    ui.add_space(2.0);
+    ui.colored_label(theme::VGA_WHITE, &cur.message);
+    if let Some((mode, idx)) = cur.at {
+        ui.add_space(2.0);
+        ui.colored_label(
+            theme::VGA_DARK_GRAY,
+            format!("at {}: {idx}", mode_label(mode)),
+        );
+    }
+    ui.add_space(6.0);
+
+    let mut new_cursor = cursor;
+    let close = ui
+        .horizontal(|ui| {
+            let prev = button(ui, "Previous").clicked();
+            let next = button(ui, "Next").clicked();
+            let goto = button(ui, "Goto").clicked();
+            let cls = button(ui, "Close").clicked();
+            if prev && cursor > 0 {
+                new_cursor = cursor - 1;
+            }
+            if next && cursor + 1 < results.len() {
+                new_cursor = cursor + 1;
+            }
+            if goto {
+                if let Some((mode, idx)) = cur.at {
+                    state.mode = mode;
+                    state.selection.clear();
+                    state.selection.push(idx);
+                    super::commands::focus_on_selection(state);
+                }
+            }
+            cls
+        })
+        .inner;
+
+    if !close {
+        state.dialog = Some(Dialog::ErrorList { results, cursor: new_cursor });
+    }
+    close
+}
+
+fn mode_label(mode: super::SelectionMode) -> &'static str {
+    match mode {
+        super::SelectionMode::Vertex => "Vertex",
+        super::SelectionMode::LineDef => "LineDef",
+        super::SelectionMode::Sector => "Sector",
+        super::SelectionMode::Thing => "Thing",
+    }
+}
+
+fn save_warning_body(ui: &mut egui::Ui, state: &mut EditorState, pending: PendingAction) -> bool {
+    ui.colored_label(theme::VGA_BRIGHT_RED, "This map has been modified.");
+    ui.colored_label(theme::MENU_FG, "Do you want to save?");
+    ui.add_space(6.0);
+    let close = ui
+        .horizontal(|ui| {
+            let yes = button(ui, "Yes").clicked();
+            let no = button(ui, "No").clicked();
+            let cancel = button(ui, "cancel").clicked();
+            if yes {
+                commands::save_map(state);
+                // If save itself opened a Notice (e.g. error), state.dialog is
+                // now that Notice — don't run the pending action.
+                if state.dialog.is_none() && !state.is_dirty {
+                    commands::run_pending(state, &pending);
+                }
+                return true;
+            }
+            if no {
+                commands::run_pending(state, &pending);
+                return true;
+            }
+            cancel
+        })
+        .inner;
+
+    if !close {
+        state.dialog = Some(Dialog::SaveWarning { pending });
+    }
+    close
 }
 
 fn about_body(ui: &mut egui::Ui) -> bool {
@@ -334,6 +442,8 @@ fn load_selected_map(state: &mut EditorState, name: String) {
         Ok(map) => {
             state.map = Some(map);
             state.selection.clear();
+            state.is_dirty = false;
+            state.undo_baseline = state.map.clone();
             commands::center_map(state);
         }
         Err(e) => {
