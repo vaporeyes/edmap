@@ -55,7 +55,7 @@ fn title_bar(ui: &mut egui::Ui, title: &str) {
         egui::pos2(rect.left() + 6.0, rect.center().y),
         Align2::LEFT_CENTER,
         title,
-        egui::FontId::new(12.0, egui::FontFamily::Monospace),
+        egui::FontId::new(13.0, egui::FontFamily::Monospace),
         theme::MENU_HILITE_FG,
     );
     let _ = Color32::TRANSPARENT;
@@ -73,6 +73,13 @@ fn title_for(dialog: &Dialog) -> &'static str {
         Dialog::Notice { .. } => "Notice",
         Dialog::SaveWarning { .. } => "Save warning",
         Dialog::ErrorList { .. } => "Error List",
+        Dialog::Polygon { .. } => "Polygon",
+        Dialog::Door { .. } => "Door",
+        Dialog::Stairs { .. } => "Stairs",
+        Dialog::EditVertex { .. } => "Edit Vertex",
+        Dialog::EditLineDef { .. } => "Edit LineDef",
+        Dialog::EditSector { .. } => "Edit Sector",
+        Dialog::EditThing { .. } => "Edit Thing",
     }
 }
 
@@ -89,7 +96,233 @@ fn body(ui: &mut egui::Ui, state: &mut EditorState, dialog: Dialog) -> bool {
         Dialog::Notice { title: _, message } => notice_body(ui, message),
         Dialog::SaveWarning { pending } => save_warning_body(ui, state, pending),
         Dialog::ErrorList { results, cursor } => error_list_body(ui, state, results, cursor),
+        Dialog::Polygon { sides, radius } => polygon_body(ui, state, sides, radius),
+        Dialog::Door { key, fast } => door_body(ui, state, key, fast),
+        Dialog::EditVertex { idx, x, y } => edit_vertex_body(ui, state, idx, x, y),
+        Dialog::EditLineDef {
+            idx, flags, special, tag, front_sidedef, back_sidedef,
+        } => edit_linedef_body(ui, state, idx, flags, special, tag, front_sidedef, back_sidedef),
+        Dialog::EditSector {
+            idx, floor_height, ceiling_height, light, sector_type, tag, floor_texture, ceiling_texture,
+        } => edit_sector_body(ui, state, idx, floor_height, ceiling_height, light, sector_type, tag, floor_texture, ceiling_texture),
+        Dialog::EditThing { idx, x, y, angle, thing_type, flags } => {
+            edit_thing_body(ui, state, idx, x, y, angle, thing_type, flags)
+        }
+        Dialog::Stairs {
+            steps,
+            rise,
+            depth,
+            width,
+            direction,
+            top_texture,
+            side_texture,
+        } => stairs_body(
+            ui, state, steps, rise, depth, width, direction, top_texture, side_texture,
+        ),
     }
+}
+
+fn polygon_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    sides: String,
+    radius: String,
+) -> bool {
+    let mut sides = sides;
+    let mut radius = radius;
+    ui.colored_label(theme::MENU_FG, "Place center at cursor.");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Number of sides:");
+        ui.add(text_box(&mut sides, 6));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Radius:");
+        ui.add(text_box(&mut radius, 6));
+    });
+    ui.add_space(6.0);
+
+    let close = ui
+        .horizontal(|ui| {
+            let ok = button(ui, "OK").clicked();
+            let cancel = button(ui, "cancel").clicked();
+            if ok {
+                let s: usize = sides.trim().parse().unwrap_or(8);
+                let r: f32 = radius.trim().parse().unwrap_or(128.0);
+                commands::create_polygon(state, s, r);
+                return true;
+            }
+            cancel
+        })
+        .inner;
+
+    if !close {
+        state.dialog = Some(Dialog::Polygon { sides, radius });
+    }
+    close
+}
+
+fn door_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    key: super::state::DoorKey,
+    fast: bool,
+) -> bool {
+    let mut key = key;
+    let mut fast = fast;
+
+    ui.colored_label(theme::MENU_FG, "Turns the selected sector into a door.");
+    ui.colored_label(theme::VGA_DARK_GRAY, "(must be in Sector mode with one selected)");
+    ui.add_space(4.0);
+
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Key:");
+        for k in [
+            super::state::DoorKey::Keyless,
+            super::state::DoorKey::Blue,
+            super::state::DoorKey::Yellow,
+            super::state::DoorKey::Red,
+        ] {
+            let active = key == k;
+            let (label_color, deco) = match k {
+                super::state::DoorKey::Keyless => (theme::MENU_FG, false),
+                super::state::DoorKey::Blue => (theme::VGA_BRIGHT_BLUE, true),
+                super::state::DoorKey::Yellow => (theme::VGA_YELLOW, true),
+                super::state::DoorKey::Red => (theme::VGA_BRIGHT_RED, true),
+            };
+            let _ = deco;
+            let label = if active {
+                RichText::new(k.label()).color(label_color).underline()
+            } else {
+                RichText::new(k.label()).color(label_color)
+            };
+            if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
+                key = k;
+            }
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Speed:");
+        for (label_text, want_fast) in [("Normal", false), ("Fast", true)] {
+            let active = fast == want_fast;
+            let label = if active {
+                RichText::new(label_text).color(theme::VGA_YELLOW).underline()
+            } else {
+                RichText::new(label_text).color(theme::VGA_BRIGHT_CYAN)
+            };
+            if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
+                fast = want_fast;
+            }
+        }
+    });
+
+    ui.add_space(6.0);
+
+    let close = ui
+        .horizontal(|ui| {
+            let ok = button(ui, "OK").clicked();
+            let cancel = button(ui, "cancel").clicked();
+            if ok {
+                commands::create_door(state, key, fast);
+                return true;
+            }
+            cancel
+        })
+        .inner;
+
+    if !close {
+        state.dialog = Some(Dialog::Door { key, fast });
+    }
+    close
+}
+
+fn stairs_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    steps: String,
+    rise: String,
+    depth: String,
+    width: String,
+    direction: super::state::StairsDirection,
+    top_texture: String,
+    side_texture: String,
+) -> bool {
+    let mut steps = steps;
+    let mut rise = rise;
+    let mut depth = depth;
+    let mut width = width;
+    let mut direction = direction;
+    let mut top_texture = top_texture;
+    let mut side_texture = side_texture;
+
+    ui.colored_label(theme::MENU_FG, "First step starts at cursor.");
+    ui.add_space(4.0);
+
+    macro_rules! row {
+        ($label:expr, $buf:ident, $w:expr) => {
+            ui.horizontal(|ui| {
+                ui.colored_label(theme::MENU_FG, $label);
+                ui.add(text_box(&mut $buf, $w));
+            });
+        };
+    }
+    row!("Number of steps:", steps, 4);
+    row!("Step rise:      ", rise, 4);
+    row!("Step depth:     ", depth, 4);
+    row!("Step width:     ", width, 4);
+    row!("Top texture:    ", top_texture, 8);
+    row!("Side texture:   ", side_texture, 8);
+
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Direction:");
+        for d in [
+            super::state::StairsDirection::North,
+            super::state::StairsDirection::East,
+            super::state::StairsDirection::South,
+            super::state::StairsDirection::West,
+        ] {
+            let active = direction == d;
+            let label = if active {
+                RichText::new(d.label()).color(theme::VGA_YELLOW).underline()
+            } else {
+                RichText::new(d.label()).color(theme::VGA_BRIGHT_CYAN)
+            };
+            if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
+                direction = d;
+            }
+        }
+    });
+    ui.add_space(6.0);
+
+    let close = ui
+        .horizontal(|ui| {
+            let ok = button(ui, "OK").clicked();
+            let cancel = button(ui, "cancel").clicked();
+            if ok {
+                let s: usize = steps.trim().parse().unwrap_or(8);
+                let r: i32 = rise.trim().parse().unwrap_or(16);
+                let d: i32 = depth.trim().parse().unwrap_or(32);
+                let w: i32 = width.trim().parse().unwrap_or(128);
+                commands::create_stairs(state, s, r, d, w, direction, &top_texture, &side_texture);
+                return true;
+            }
+            cancel
+        })
+        .inner;
+
+    if !close {
+        state.dialog = Some(Dialog::Stairs {
+            steps,
+            rise,
+            depth,
+            width,
+            direction,
+            top_texture,
+            side_texture,
+        });
+    }
+    close
 }
 
 fn error_list_body(
@@ -473,7 +706,7 @@ fn button(ui: &mut egui::Ui, label: &str) -> egui::Response {
         rect.center(),
         Align2::CENTER_CENTER,
         label,
-        egui::FontId::new(12.0, egui::FontFamily::Monospace),
+        egui::FontId::new(13.0, egui::FontFamily::Monospace),
         fg,
     );
     resp
@@ -483,7 +716,7 @@ fn text_box<'a>(buf: &'a mut String, char_width: usize) -> egui::TextEdit<'a> {
     egui::TextEdit::singleline(buf)
         .desired_width(char_width as f32 * 9.0)
         .text_color(theme::VGA_BLACK)
-        .font(egui::FontId::new(12.0, egui::FontFamily::Monospace))
+        .font(egui::FontId::new(13.0, egui::FontFamily::Monospace))
 }
 
 /// Helpers for SelectionMode that only matter inside dialogs.
@@ -500,4 +733,303 @@ impl SelectionModeExt for super::SelectionMode {
             super::SelectionMode::Thing => "thing",
         }
     }
+}
+
+// ---------------- Per-object property editor ----------------
+
+fn parse_i16(s: &str) -> Option<i16> { s.trim().parse().ok() }
+fn parse_u16(s: &str) -> Option<u16> { s.trim().parse().ok() }
+
+fn edit_vertex_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    idx: usize,
+    x: String,
+    y: String,
+) -> bool {
+    let mut x = x;
+    let mut y = y;
+    ui.colored_label(theme::MENU_FG, format!("Vertex #{idx}"));
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "X:");
+        ui.add(text_box(&mut x, 8));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Y:");
+        ui.add(text_box(&mut y, 8));
+    });
+    ui.add_space(6.0);
+
+    let close = ui.horizontal(|ui| {
+        let ok = button(ui, "OK").clicked();
+        let cancel = button(ui, "cancel").clicked();
+        if ok {
+            if let Some(map) = state.map.as_mut() {
+                if let Some(v) = map.vertices.get_mut(idx) {
+                    if let Some(nx) = parse_i16(&x) { v.x = nx; }
+                    if let Some(ny) = parse_i16(&y) { v.y = ny; }
+                    state.is_dirty = true;
+                }
+            }
+            return true;
+        }
+        cancel
+    }).inner;
+    if !close {
+        state.dialog = Some(Dialog::EditVertex { idx, x, y });
+    }
+    close
+}
+
+fn edit_linedef_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    idx: usize,
+    flags: String,
+    special: String,
+    tag: String,
+    front_sidedef: String,
+    back_sidedef: String,
+) -> bool {
+    let mut flags = flags;
+    let mut special = special;
+    let mut tag = tag;
+    let mut front_sidedef = front_sidedef;
+    let mut back_sidedef = back_sidedef;
+
+    ui.colored_label(theme::MENU_FG, format!("LineDef #{idx}"));
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Flags (bitmask):");
+        ui.add(text_box(&mut flags, 6));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Special type:  ");
+        ui.add(text_box(&mut special, 6));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Sector tag:    ");
+        ui.add(text_box(&mut tag, 6));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Front sidedef: ");
+        ui.add(text_box(&mut front_sidedef, 8));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Back sidedef:  ");
+        ui.add(text_box(&mut back_sidedef, 8));
+    });
+    ui.colored_label(theme::VGA_DARK_GRAY, "(use 65535 for no back sidedef)");
+    ui.add_space(6.0);
+
+    let close = ui.horizontal(|ui| {
+        let ok = button(ui, "OK").clicked();
+        let cancel = button(ui, "cancel").clicked();
+        if ok {
+            if let Some(map) = state.map.as_mut() {
+                if let Some(ld) = map.linedefs.get_mut(idx) {
+                    if let Some(v) = parse_u16(&flags) { ld.flags = v; }
+                    if let Some(v) = parse_u16(&special) { ld.special_type = v; }
+                    if let Some(v) = parse_u16(&tag) { ld.sector_tag = v; }
+                    if let Some(v) = parse_u16(&front_sidedef) { ld.front_sidedef = v; }
+                    if let Some(v) = parse_u16(&back_sidedef) { ld.back_sidedef = v; }
+                    state.is_dirty = true;
+                }
+            }
+            return true;
+        }
+        cancel
+    }).inner;
+    if !close {
+        state.dialog = Some(Dialog::EditLineDef {
+            idx, flags, special, tag, front_sidedef, back_sidedef,
+        });
+    }
+    close
+}
+
+#[allow(clippy::too_many_arguments)]
+fn edit_sector_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    idx: usize,
+    floor_height: String,
+    ceiling_height: String,
+    light: String,
+    sector_type: String,
+    tag: String,
+    floor_texture: String,
+    ceiling_texture: String,
+) -> bool {
+    let mut floor_height = floor_height;
+    let mut ceiling_height = ceiling_height;
+    let mut light = light;
+    let mut sector_type = sector_type;
+    let mut tag = tag;
+    let mut floor_texture = floor_texture;
+    let mut ceiling_texture = ceiling_texture;
+
+    ui.colored_label(theme::MENU_FG, format!("Sector #{idx}"));
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Floor height:  ");
+        ui.add(text_box(&mut floor_height, 8));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Ceiling height:");
+        ui.add(text_box(&mut ceiling_height, 8));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Light (0-255): ");
+        ui.add(text_box(&mut light, 6));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Sector type:   ");
+        ui.add(text_box(&mut sector_type, 6));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Tag:           ");
+        ui.add(text_box(&mut tag, 6));
+    });
+    let mut pick_floor = false;
+    let mut pick_ceiling = false;
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Floor texture:  ");
+        ui.add(text_box(&mut floor_texture, 9));
+        if button(ui, "Pick").clicked() {
+            pick_floor = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Ceiling texture:");
+        ui.add(text_box(&mut ceiling_texture, 9));
+        if button(ui, "Pick").clicked() {
+            pick_ceiling = true;
+        }
+    });
+    ui.add_space(6.0);
+
+    if pick_floor || pick_ceiling {
+        // Stash this dialog with current edits, open viewer in pick mode.
+        let stashed = Dialog::EditSector {
+            idx, floor_height, ceiling_height, light, sector_type, tag,
+            floor_texture, ceiling_texture,
+        };
+        let target = if pick_floor {
+            super::state::PickTarget::SectorFloor
+        } else {
+            super::state::PickTarget::SectorCeiling
+        };
+        state.dialog_pending = Some(stashed);
+        state.viewer_pick = Some(target);
+        state.viewer_category = target.default_category();
+        state.viewer_open = true;
+        return true; // close current dialog rendering this frame
+    }
+
+    let close = ui.horizontal(|ui| {
+        let ok = button(ui, "OK").clicked();
+        let cancel = button(ui, "cancel").clicked();
+        if ok {
+            if let Some(map) = state.map.as_mut() {
+                if let Some(s) = map.sectors.get_mut(idx) {
+                    if let Some(v) = parse_i16(&floor_height) { s.floor_height = v; }
+                    if let Some(v) = parse_i16(&ceiling_height) { s.ceiling_height = v; }
+                    if let Some(v) = parse_i16(&light) { s.light_level = v.clamp(0, 255); }
+                    if let Some(v) = parse_u16(&sector_type) { s.sector_type = v; }
+                    if let Some(v) = parse_u16(&tag) { s.tag = v; }
+                    s.floor_texture = clamp_tex_name(&floor_texture);
+                    s.ceiling_texture = clamp_tex_name(&ceiling_texture);
+                    state.is_dirty = true;
+                }
+            }
+            return true;
+        }
+        cancel
+    }).inner;
+    if !close {
+        state.dialog = Some(Dialog::EditSector {
+            idx, floor_height, ceiling_height, light, sector_type, tag,
+            floor_texture, ceiling_texture,
+        });
+    }
+    close
+}
+
+fn edit_thing_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    idx: usize,
+    x: String,
+    y: String,
+    angle: String,
+    thing_type: String,
+    flags: String,
+) -> bool {
+    let mut x = x;
+    let mut y = y;
+    let mut angle = angle;
+    let mut thing_type = thing_type;
+    let mut flags = flags;
+
+    ui.colored_label(theme::MENU_FG, format!("Thing #{idx}"));
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "X:    ");
+        ui.add(text_box(&mut x, 8));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Y:    ");
+        ui.add(text_box(&mut y, 8));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Angle:");
+        ui.add(text_box(&mut angle, 6));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Type: ");
+        ui.add(text_box(&mut thing_type, 6));
+    });
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Flags:");
+        ui.add(text_box(&mut flags, 6));
+    });
+    ui.add_space(6.0);
+
+    let close = ui.horizontal(|ui| {
+        let ok = button(ui, "OK").clicked();
+        let cancel = button(ui, "cancel").clicked();
+        if ok {
+            if let Some(map) = state.map.as_mut() {
+                if let Some(t) = map.things.get_mut(idx) {
+                    if let Some(v) = parse_i16(&x) { t.x = v; }
+                    if let Some(v) = parse_i16(&y) { t.y = v; }
+                    if let Some(v) = parse_i16(&angle) { t.angle = v; }
+                    if let Some(v) = parse_u16(&thing_type) { t.thing_type = v; }
+                    if let Some(v) = parse_u16(&flags) { t.flags = v; }
+                    state.is_dirty = true;
+                }
+            }
+            return true;
+        }
+        cancel
+    }).inner;
+    if !close {
+        state.dialog = Some(Dialog::EditThing { idx, x, y, angle, thing_type, flags });
+    }
+    close
+}
+
+/// Clip texture name to 8 ASCII bytes, uppercase. Matches DOOM lump-name limits.
+fn clamp_tex_name(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let n = bytes.len().min(8);
+    let mut out = String::with_capacity(n);
+    for &b in &bytes[..n] {
+        if b.is_ascii() {
+            out.push(b.to_ascii_uppercase() as char);
+        }
+    }
+    if out.is_empty() { "-".into() } else { out }
 }

@@ -69,13 +69,13 @@ pub fn draw_open_menu(ctx: &egui::Context, state: &mut EditorState) {
 }
 
 fn cascade_header(ui: &mut egui::Ui, name: &str) {
-    let desired = egui::vec2(ui.available_width(), 15.0);
+    let desired = egui::vec2(ui.available_width(), 16.0);
     let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme::MENU_HILITE_BG);
-    let font = egui::FontId::new(12.0, egui::FontFamily::Monospace);
+    let font = egui::FontId::new(13.0, egui::FontFamily::Proportional);
     painter.text(
-        egui::pos2(rect.left() + 4.0, rect.center().y),
+        egui::pos2(rect.left() + 6.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         name,
         font,
@@ -96,7 +96,7 @@ fn menu_row(ui: &mut egui::Ui, label: &str, hotkey: &str) -> egui::Response {
     // Pressed bevel when hovered (about-to-click look) so the row "depresses".
     theme::draw_bevel(&painter, rect, hovered);
 
-    let font = egui::FontId::new(12.0, egui::FontFamily::Monospace);
+    let font = egui::FontId::new(13.0, egui::FontFamily::Proportional);
     let label_pos = egui::pos2(rect.left() + 8.0, rect.center().y);
     painter.text(label_pos, egui::Align2::LEFT_CENTER, label, font.clone(), fg);
 
@@ -236,6 +236,30 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
         ("Edit", "Goto object") => {
             state.dialog = Some(Dialog::GotoObject { input: String::new() });
         }
+        ("Sectors", "Polygon") => {
+            state.dialog = Some(Dialog::Polygon {
+                sides: "8".into(),
+                radius: "128".into(),
+            });
+        }
+        ("Automatic", "Door") => {
+            state.dialog = Some(Dialog::Door {
+                key: super::state::DoorKey::Keyless,
+                fast: false,
+            });
+        }
+        ("Automatic", "Stairs") => {
+            state.dialog = Some(Dialog::Stairs {
+                steps: "8".into(),
+                rise: "16".into(),
+                depth: "32".into(),
+                width: "128".into(),
+                direction: super::state::StairsDirection::North,
+                top_texture: "FLOOR4_8".into(),
+                side_texture: "STEP1".into(),
+            });
+        }
+        ("Edit", "Add/split") => super::commands::add_at_cursor(state),
         ("Edit", "Delete/merge") => super::commands::delete_selected(state),
         ("Edit", "Undo from last save") => super::commands::undo_to_baseline(state),
         ("Display", "Grid on/off") => state.grid_visible = !state.grid_visible,

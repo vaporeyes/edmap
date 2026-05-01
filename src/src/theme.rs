@@ -41,6 +41,7 @@ pub const LINEDEF_NORMAL: Color32 = VGA_WHITE;
 pub const LINEDEF_TWO_SIDED: Color32 = VGA_GRAY;
 pub const LINEDEF_SELECTED: Color32 = VGA_BRIGHT_RED;
 pub const VERTEX_DOT: Color32 = VGA_BRIGHT_GREEN;
+pub const VERTEX_HOVER: Color32 = VGA_YELLOW;
 pub const THING_MARK: Color32 = VGA_BRIGHT_CYAN;
 
 /// Draw a 1-pixel Turbo-Vision-style bevel onto a button rectangle.
@@ -79,17 +80,22 @@ pub fn draw_bevel(painter: &egui::Painter, rect: egui::Rect, pressed: bool) {
 }
 
 pub fn install(ctx: &egui::Context) {
+    install_fonts(ctx);
+
     let mut style = Style::default();
 
-    let body = FontId::new(13.0, FontFamily::Monospace);
-    let small = FontId::new(11.0, FontFamily::Monospace);
-    let heading = FontId::new(14.0, FontFamily::Monospace);
+    // Proportional family is the BGI sans font when loaded; numeric-aligned
+    // surfaces (status block coords, LD# table) keep Monospace.
+    let body = FontId::new(14.0, FontFamily::Proportional);
+    let small = FontId::new(12.0, FontFamily::Proportional);
+    let heading = FontId::new(15.0, FontFamily::Proportional);
+    let mono = FontId::new(14.0, FontFamily::Monospace);
 
     style.text_styles.insert(TextStyle::Body, body.clone());
     style.text_styles.insert(TextStyle::Small, small);
     style.text_styles.insert(TextStyle::Heading, heading);
-    style.text_styles.insert(TextStyle::Button, body.clone());
-    style.text_styles.insert(TextStyle::Monospace, body);
+    style.text_styles.insert(TextStyle::Button, body);
+    style.text_styles.insert(TextStyle::Monospace, mono);
 
     let mut visuals = Visuals::dark();
     visuals.override_text_color = Some(VGA_GRAY);
@@ -142,4 +148,75 @@ pub fn install(ctx: &egui::Context) {
     style.spacing.window_margin = egui::Margin::same(0.0);
 
     ctx.set_style(style);
+}
+
+/// Try to install custom fonts from `assets/`. Loads bgi-sans.ttf if present
+/// and inserts it at the head of the Proportional family. Logs a warning to
+/// stderr if not found and falls back to egui's defaults.
+fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let mut installed: Vec<String> = Vec::new();
+
+    // Primary proportional font: PxPlus IBM VGA 9x16 — VileR's pixel-perfect
+    // recreation of the IBM VGA 9-pixel ROM bitmap, period-correct for an
+    // editor that targets DOS VGA aesthetics.
+    let primary_candidates = [
+        "PxPlus_IBM_VGA_9x16.ttf",
+        "PxPlus_IBM_VGA_8x16.ttf",
+        "Px437_IBM_VGA_9x16.ttf",
+        "roboto.ttf",
+        "Roboto-Regular.ttf",
+    ];
+    let primary = primary_candidates
+        .iter()
+        .find_map(|n| read_asset(n).map(|b| (*n, b)));
+    if let Some((name, bytes)) = primary {
+        let key = "ui-primary".to_string();
+        fonts.font_data.insert(
+            key.clone(),
+            egui::FontData::from_owned(bytes).into(),
+        );
+        fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .insert(0, key.clone());
+        // Pixel fonts also serve as Monospace — the VGA 9x16 face is
+        // monospaced by design, so coordinate columns line up correctly.
+        fonts
+            .families
+            .entry(egui::FontFamily::Monospace)
+            .or_default()
+            .insert(0, key);
+        installed.push(name.to_string());
+    } else {
+        eprintln!(
+            "theme: no proportional font found in assets/. Drop PxPlus_IBM_VGA_9x16.ttf or \
+             roboto.ttf at src/assets/ to override the default."
+        );
+    }
+
+    if !installed.is_empty() {
+        eprintln!("theme: loaded custom fonts: {}", installed.join(", "));
+    }
+    ctx.set_fonts(fonts);
+}
+
+/// Look for an asset file at runtime in a few candidate directories so the
+/// app works whether you run it via `cargo run` or from the built binary.
+fn read_asset(name: &str) -> Option<Vec<u8>> {
+    use std::path::PathBuf;
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let candidates = [
+        PathBuf::from(manifest_dir).join("assets").join(name),
+        PathBuf::from("assets").join(name),
+        PathBuf::from("../assets").join(name),
+        PathBuf::from("./src/assets").join(name),
+    ];
+    for path in &candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            return Some(bytes);
+        }
+    }
+    None
 }

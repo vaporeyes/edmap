@@ -58,7 +58,7 @@ impl eframe::App for EdMapApp {
             .exact_width(160.0)
             .frame(egui::Frame::none().fill(theme::SIDEBAR_BG))
             .show(ctx, |ui| {
-                sidebar::draw(ui, &mut self.state);
+                sidebar::draw(ui, &mut self.state, &mut self.bank);
             });
 
         egui::CentralPanel::default()

@@ -100,6 +100,7 @@ pub fn dispatch(ctx: &egui::Context, state: &mut EditorState) {
             }
             if input.key_pressed(Key::Escape) {
                 if state.viewer_open {
+                    super::viewer::cancel_pick(state);
                     state.viewer_open = false;
                 } else if state.dialog.is_some() {
                     state.dialog = None;
@@ -107,6 +108,11 @@ pub fn dispatch(ctx: &egui::Context, state: &mut EditorState) {
                     state.open_menu = None;
                     state.status_message = None;
                 }
+            }
+            // Enter on a selection → open Properties dialog. Skipped while a
+            // dialog is already open so it doesn't fight TextEdit submit.
+            if input.key_pressed(Key::Enter) && state.dialog.is_none() && !state.viewer_open {
+                commands::open_properties(state);
             }
         }
 

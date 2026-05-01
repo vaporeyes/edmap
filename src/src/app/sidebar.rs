@@ -5,9 +5,17 @@ use eframe::egui::{self, Color32, RichText};
 
 use super::menu::MENU_ORDER;
 use super::state::{EditorState, SelectionMode};
+use super::textures::TextureBank;
 use crate::theme;
 
-pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
+/// Which family the texture belongs to — controls bank lookup + popup label.
+#[derive(Clone, Copy)]
+enum TexKind {
+    Wall,
+    Flat,
+}
+
+pub fn draw(ui: &mut egui::Ui, state: &mut EditorState, bank: &mut TextureBank) {
     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
     menu_list(ui, state);
@@ -21,11 +29,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
     counter_line(ui, state);
     separator(ui);
     match state.mode {
-        SelectionMode::LineDef => linedef_panel(ui, state),
+        SelectionMode::LineDef => linedef_panel(ui, state, bank),
         SelectionMode::Vertex => vertex_panel(ui, state),
-        SelectionMode::Sector => sector_panel(ui, state),
+        SelectionMode::Sector => sector_panel(ui, state, bank),
         SelectionMode::Thing => thing_panel(ui, state),
     }
+    separator(ui);
+    compass_rosette(ui, state);
 
     if let Some(msg) = &state.status_message {
         separator(ui);
@@ -57,7 +67,7 @@ fn menu_list(ui: &mut egui::Ui, state: &mut EditorState) {
         // Inverted when the row is "pressed" (active/open).
         crate::theme::draw_bevel(&painter, rect, is_open);
 
-        let font = egui::FontId::new(12.0, egui::FontFamily::Monospace);
+        let font = egui::FontId::new(13.0, egui::FontFamily::Proportional);
         painter.text(
             egui::pos2(rect.left() + 4.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
@@ -156,30 +166,117 @@ fn counter_line(ui: &mut egui::Ui, state: &EditorState) {
     });
 }
 
-fn compass_rosette(ui: &mut egui::Ui) {
+/// One row in the "Supported LineDefs" list — a linedef that contains the
+/// selected vertex. `letter` is its label in the compass + LD# table; A-Z
+/// in order of discovery.
+#[derive(Debug, Clone, Copy)]
+struct SupportedLine {
+    letter: char,
+    linedef_idx: usize,
+    length: f32,
+    /// Angle in radians from the selected vertex to the OTHER endpoint of this
+    /// linedef. `0` = +X (east), `+pi/2` = +Y (north). Used to position the
+    /// letter on the compass dial.
+    angle: f32,
+}
+
+fn supported_linedefs(map: &crate::wad::MapData, vertex_idx: usize) -> Vec<SupportedLine> {
+    let Some(v) = map.vertices.get(vertex_idx) else { return Vec::new() };
+    let mut out = Vec::new();
+    for (i, ld) in map.linedefs.iter().enumerate() {
+        let other = if ld.start_vertex as usize == vertex_idx {
+            Some(ld.end_vertex as usize)
+        } else if ld.end_vertex as usize == vertex_idx {
+            Some(ld.start_vertex as usize)
+        } else {
+            None
+        };
+        let Some(other_idx) = other else { continue };
+        let Some(other_v) = map.vertices.get(other_idx) else { continue };
+        let dx = (other_v.x - v.x) as f32;
+        let dy = (other_v.y - v.y) as f32;
+        let length = (dx * dx + dy * dy).sqrt();
+        let angle = dy.atan2(dx);
+        let letter = (b'A' + (out.len() as u8 % 26)) as char;
+        out.push(SupportedLine { letter, linedef_idx: i, length, angle });
+        if out.len() >= 26 {
+            break;
+        }
+    }
+    out
+}
+
+fn compass_rosette(ui: &mut egui::Ui, state: &EditorState) {
     let frame = egui::Frame::none()
         .fill(theme::SIDEBAR_BG)
-        .inner_margin(egui::Margin::symmetric(4.0, 4.0));
+        .inner_margin(egui::Margin {
+            left: 4.0,
+            right: 4.0,
+            top: 14.0,
+            bottom: 8.0,
+        });
     frame.show(ui, |ui| {
-        let size = egui::vec2(ui.available_width().min(80.0), 60.0);
+        // Use the full sidebar width so the dial centers under the column,
+        // not against the left edge. Height is fixed at 76 px which leaves
+        // 8 px of slack between the label-ring and the panel edges.
+        let avail_w = ui.available_width().max(80.0);
+        let size = egui::vec2(avail_w, 76.0);
         let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
         let painter = ui.painter_at(rect);
         let center = rect.center();
-        let r = size.y * 0.4;
-        // Cross arms
+        // Cap the radius so labels at (r + 10) still fit inside the rect on
+        // all four sides regardless of how wide the sidebar is.
+        let r = ((size.y - 20.0) * 0.5).min((size.x - 24.0) * 0.5).max(8.0);
+        let label_r = r + 10.0;
+        let stroke = egui::Stroke::new(1.0, theme::VGA_BRIGHT_CYAN);
+        let font = egui::FontId::new(12.0, egui::FontFamily::Monospace);
+
+        // Center circle is always there.
+        painter.circle_stroke(center, 6.0, stroke);
+
+        // Vertex mode + a vertex selected: draw a stub line per supported
+        // linedef at its angle, with its letter at the tip.
+        if state.mode == SelectionMode::Vertex {
+            if let (Some(map), Some(&vidx)) = (state.map.as_ref(), state.selection.first()) {
+                let lines = supported_linedefs(map, vidx);
+                if !lines.is_empty() {
+                    for line in &lines {
+                        // Note: world Y increases UP, screen Y increases DOWN, so flip sin.
+                        let dx = line.angle.cos();
+                        let dy = -line.angle.sin();
+                        let tip = egui::pos2(center.x + dx * r, center.y + dy * r);
+                        let label_pos =
+                            egui::pos2(center.x + dx * label_r, center.y + dy * label_r);
+                        painter.line_segment([center, tip], stroke);
+                        painter.text(
+                            label_pos,
+                            egui::Align2::CENTER_CENTER,
+                            line.letter.to_string(),
+                            font.clone(),
+                            theme::VGA_BRIGHT_CYAN,
+                        );
+                    }
+                    let _ = Color32::TRANSPARENT;
+                    return;
+                }
+            }
+        }
+
+        // Fallback: static cross + cardinal letters.
         painter.line_segment(
             [egui::pos2(center.x - r, center.y), egui::pos2(center.x + r, center.y)],
-            egui::Stroke::new(1.0, theme::VGA_BRIGHT_CYAN),
+            stroke,
         );
         painter.line_segment(
             [egui::pos2(center.x, center.y - r), egui::pos2(center.x, center.y + r)],
-            egui::Stroke::new(1.0, theme::VGA_BRIGHT_CYAN),
+            stroke,
         );
-        // Center circle
-        painter.circle_stroke(center, 6.0, egui::Stroke::new(1.0, theme::VGA_BRIGHT_CYAN));
-        let font = egui::FontId::new(11.0, egui::FontFamily::Monospace);
-        // Cardinal labels — H N high, L low etc per screenshot's visual cue.
-        for (label, dx, dy) in [("H", 0.0, -r - 8.0), ("L", 0.0, r + 8.0), ("G", -r - 8.0, 0.0), ("E", r + 8.0, 0.0)] {
+        for (label, dx, dy) in [
+            ("N", 0.0, -label_r),
+            ("S", 0.0, label_r),
+            ("W", -label_r, 0.0),
+            ("E", label_r, 0.0),
+        ] {
             painter.text(
                 center + egui::vec2(dx, dy),
                 egui::Align2::CENTER_CENTER,
@@ -206,14 +303,42 @@ const LINEDEF_FLAGS: &[(u8, &str, u16)] = &[
     (9, "start on map",  crate::wad::LineDef::FLAG_ALWAYS_ON_MAP),
 ];
 
-fn linedef_panel(ui: &mut egui::Ui, state: &EditorState) {
+/// Pick the index to display in a mode panel: prefer selection.first(), then
+/// the cursor-hovered object, then 0 as a stable fallback.
+fn focus_index(state: &EditorState) -> usize {
+    state
+        .selection
+        .first()
+        .copied()
+        .or(state.hover_object)
+        .unwrap_or(0)
+}
+
+fn linedef_panel(ui: &mut egui::Ui, state: &EditorState, bank: &mut TextureBank) {
     let Some(map) = &state.map else {
         return placeholder(ui, "(no map)");
     };
-    let ld_idx = state.selection.first().copied().unwrap_or(0);
+    let ld_idx = focus_index(state);
     let Some(ld) = map.linedefs.get(ld_idx) else {
         return placeholder(ui, "(no linedef)");
     };
+    // When nothing is selected, surface the index so the user knows the panel
+    // is showing a hover preview, not a stable selection.
+    let header_color = if state.selection.is_empty() {
+        theme::VGA_BRIGHT_CYAN
+    } else {
+        theme::VGA_WHITE
+    };
+
+    // Header line — shows which linedef this panel reflects. Cyan when the
+    // value is a hover preview, white when it's the actual selection.
+    let frame = egui::Frame::none()
+        .fill(theme::SIDEBAR_BG)
+        .inner_margin(egui::Margin::symmetric(4.0, 2.0));
+    frame.show(ui, |ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        ui.colored_label(header_color, format!("LineDef {ld_idx}"));
+    });
 
     // Numbered flag list.
     let frame = egui::Frame::none()
@@ -283,52 +408,164 @@ fn linedef_panel(ui: &mut egui::Ui, state: &EditorState) {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
         if ld.front_sidedef != crate::wad::LineDef::NO_SIDEDEF {
             if let Some(sd) = map.sidedefs.get(ld.front_sidedef as usize) {
-                texture_row(ui, "U", &sd.upper_texture);
-                texture_row(ui, "M", &sd.middle_texture);
-                texture_row(ui, "L", &sd.lower_texture);
+                texture_row(ui, state, bank, "U", &sd.upper_texture, TexKind::Wall);
+                texture_row(ui, state, bank, "M", &sd.middle_texture, TexKind::Wall);
+                texture_row(ui, state, bank, "L", &sd.lower_texture, TexKind::Wall);
             }
         }
         if ld.is_two_sided() && ld.back_sidedef != crate::wad::LineDef::NO_SIDEDEF {
             if let Some(sd) = map.sidedefs.get(ld.back_sidedef as usize) {
-                texture_row(ui, "N", &sd.upper_texture);
-                texture_row(ui, "B", &sd.middle_texture);
-                texture_row(ui, "R", &sd.lower_texture);
+                texture_row(ui, state, bank, "N", &sd.upper_texture, TexKind::Wall);
+                texture_row(ui, state, bank, "B", &sd.middle_texture, TexKind::Wall);
+                texture_row(ui, state, bank, "R", &sd.lower_texture, TexKind::Wall);
             }
         }
     });
 }
 
-fn texture_row(ui: &mut egui::Ui, prefix: &str, name: &str) {
+fn texture_row(
+    ui: &mut egui::Ui,
+    state: &EditorState,
+    bank: &mut TextureBank,
+    prefix: &str,
+    name: &str,
+    kind: TexKind,
+) {
     let display = if name.is_empty() || name == "-" { "-".to_string() } else { name.to_string() };
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.colored_label(theme::VGA_BRIGHT_CYAN, format!("{prefix}:"));
-        ui.colored_label(theme::VGA_WHITE, display);
-    });
+    let resp = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.colored_label(theme::VGA_BRIGHT_CYAN, format!("{prefix}:"));
+            ui.add(
+                egui::Label::new(RichText::new(&display).color(theme::VGA_WHITE))
+                    .sense(egui::Sense::hover()),
+            )
+        })
+        .inner;
+
+    // Hover popup near the cursor: a small, pixelated render of the actual
+    // texture so the user can see what M: MODWALL2 (etc.) looks like without
+    // opening the full F10 viewer.
+    if resp.hovered() && display != "-" {
+        if let Some(pos) = ui.ctx().pointer_hover_pos() {
+            paint_texture_popup(ui.ctx(), state, bank, pos, &display, kind);
+        }
+    }
+}
+
+fn paint_texture_popup(
+    ctx: &egui::Context,
+    state: &EditorState,
+    bank: &mut TextureBank,
+    cursor: egui::Pos2,
+    name: &str,
+    kind: TexKind,
+) {
+    let Some(wad) = state.wad.as_ref() else { return };
+    let handle = match kind {
+        TexKind::Wall => bank.wall(ctx, wad, name),
+        TexKind::Flat => bank.flat(ctx, wad, name),
+    };
+    let Some(handle) = handle else { return };
+    let [w, h] = handle.size();
+    if w == 0 || h == 0 {
+        return;
+    }
+    // Scale so the longest edge is at most 128 px on screen — pixel-pure
+    // power-of-two scaling gives the cleanest look on bitmap textures.
+    let max_edge = 128.0_f32;
+    let scale = (max_edge / w as f32).min(max_edge / h as f32).max(1.0);
+    let img_size = egui::vec2(w as f32 * scale, h as f32 * scale);
+    let pad = 4.0;
+    let popup_size = egui::vec2(img_size.x + pad * 2.0, img_size.y + pad * 2.0 + 14.0);
+    // Anchor offset from cursor — bottom-right of the popup near the cursor.
+    let mut origin = cursor + egui::vec2(16.0, 16.0);
+    // Keep on-screen.
+    let screen = ctx.screen_rect();
+    if origin.x + popup_size.x > screen.right() {
+        origin.x = cursor.x - 16.0 - popup_size.x;
+    }
+    if origin.y + popup_size.y > screen.bottom() {
+        origin.y = cursor.y - 16.0 - popup_size.y;
+    }
+
+    egui::Area::new(egui::Id::new(("tex_preview", name)))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(origin)
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::none()
+                .fill(theme::VIEWPORT_BG)
+                .stroke(egui::Stroke::new(1.0, theme::VGA_GRAY))
+                .inner_margin(egui::Margin::same(pad))
+                .show(ui, |ui| {
+                    ui.set_min_size(egui::vec2(img_size.x, img_size.y + 14.0));
+                    let img_rect = egui::Rect::from_min_size(
+                        ui.cursor().min,
+                        img_size,
+                    );
+                    egui::Image::new(handle).fit_to_exact_size(img_size).paint_at(ui, img_rect);
+                    ui.advance_cursor_after_rect(img_rect);
+                    ui.colored_label(
+                        theme::VGA_WHITE,
+                        format!("{name}  {w}x{h}"),
+                    );
+                });
+        });
 }
 
 fn vertex_panel(ui: &mut egui::Ui, state: &EditorState) {
+    let Some(map) = &state.map else {
+        return placeholder(ui, "(no map)");
+    };
+    let idx = focus_index(state);
+    let Some(v) = map.vertices.get(idx) else {
+        return placeholder(ui, "(no vertex)");
+    };
+
+    // Coords block.
     let frame = egui::Frame::none()
         .fill(theme::SIDEBAR_BG)
         .inner_margin(egui::Margin::symmetric(4.0, 2.0));
     frame.show(ui, |ui| {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-        let Some(map) = &state.map else {
-            ui.colored_label(theme::VGA_DARK_GRAY, "(no map)");
-            return;
-        };
-        let idx = state.selection.first().copied().unwrap_or(0);
-        let Some(v) = map.vertices.get(idx) else {
-            ui.colored_label(theme::VGA_DARK_GRAY, "(no vertex)");
-            return;
-        };
         ui.colored_label(theme::VGA_WHITE, format!("Vertex {idx}"));
         ui.colored_label(theme::VGA_WHITE, format!("X: {:>6}", v.x));
         ui.colored_label(theme::VGA_WHITE, format!("Y: {:>6}", v.y));
     });
+
+    // "Supported LineDefs" header + LD# / length table.
+    let lines = supported_linedefs(map, idx);
+    separator(ui);
+    let frame = egui::Frame::none()
+        .fill(theme::SIDEBAR_BG)
+        .inner_margin(egui::Margin::symmetric(4.0, 2.0));
+    frame.show(ui, |ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        ui.colored_label(theme::VGA_BRIGHT_CYAN, "Supported");
+        ui.colored_label(theme::VGA_BRIGHT_CYAN, "LineDefs:");
+        if lines.is_empty() {
+            ui.colored_label(theme::VGA_DARK_GRAY, "(none)");
+            return;
+        }
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.colored_label(theme::VGA_BRIGHT_CYAN, "LD#");
+            ui.colored_label(theme::VGA_BRIGHT_CYAN, "length");
+        });
+        for line in &lines {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.colored_label(theme::VGA_YELLOW, line.letter.to_string());
+                ui.colored_label(theme::VGA_WHITE, format!("{:>3}", line.linedef_idx));
+                ui.colored_label(theme::VGA_WHITE, format!("{:>7.3}", line.length));
+            });
+        }
+    });
 }
 
-fn sector_panel(ui: &mut egui::Ui, state: &EditorState) {
+fn sector_panel(ui: &mut egui::Ui, state: &EditorState, bank: &mut TextureBank) {
     let frame = egui::Frame::none()
         .fill(theme::SIDEBAR_BG)
         .inner_margin(egui::Margin::symmetric(4.0, 2.0));
@@ -338,7 +575,7 @@ fn sector_panel(ui: &mut egui::Ui, state: &EditorState) {
             ui.colored_label(theme::VGA_DARK_GRAY, "(no map)");
             return;
         };
-        let idx = state.selection.first().copied().unwrap_or(0);
+        let idx = focus_index(state);
         let Some(s) = map.sectors.get(idx) else {
             ui.colored_label(theme::VGA_DARK_GRAY, "(no sector)");
             return;
@@ -350,8 +587,8 @@ fn sector_panel(ui: &mut egui::Ui, state: &EditorState) {
         ui.colored_label(theme::VGA_WHITE, format!("type:    {}", s.sector_type));
         ui.colored_label(theme::VGA_WHITE, format!("tag:     {}", s.tag));
         ui.add_space(2.0);
-        texture_row(ui, "C", &s.ceiling_texture);
-        texture_row(ui, "F", &s.floor_texture);
+        texture_row(ui, state, bank, "C", &s.ceiling_texture, TexKind::Flat);
+        texture_row(ui, state, bank, "F", &s.floor_texture, TexKind::Flat);
     });
 }
 
@@ -365,7 +602,7 @@ fn thing_panel(ui: &mut egui::Ui, state: &EditorState) {
             ui.colored_label(theme::VGA_DARK_GRAY, "(no map)");
             return;
         };
-        let idx = state.selection.first().copied().unwrap_or(0);
+        let idx = focus_index(state);
         let Some(t) = map.things.get(idx) else {
             ui.colored_label(theme::VGA_DARK_GRAY, "(no thing)");
             return;
@@ -386,4 +623,50 @@ fn placeholder(ui: &mut egui::Ui, msg: &str) {
     frame.show(ui, |ui| {
         ui.colored_label(theme::VGA_DARK_GRAY, msg);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::supported_linedefs;
+    use crate::wad::{LineDef, MapData, Vertex};
+
+    #[test]
+    fn supported_linedefs_finds_both_endpoints_with_letters() {
+        // Vertex 0 is shared by two linedefs: 0→1 horizontal, 0→2 vertical.
+        let map = MapData {
+            name: "T".into(),
+            vertices: vec![
+                Vertex { x: 0, y: 0 },
+                Vertex { x: 100, y: 0 },
+                Vertex { x: 0, y: 50 },
+            ],
+            linedefs: vec![
+                LineDef {
+                    start_vertex: 0, end_vertex: 1,
+                    flags: 0, special_type: 0, sector_tag: 0,
+                    front_sidedef: LineDef::NO_SIDEDEF, back_sidedef: LineDef::NO_SIDEDEF,
+                },
+                LineDef {
+                    start_vertex: 2, end_vertex: 0,
+                    flags: 0, special_type: 0, sector_tag: 0,
+                    front_sidedef: LineDef::NO_SIDEDEF, back_sidedef: LineDef::NO_SIDEDEF,
+                },
+            ],
+            sidedefs: vec![],
+            sectors: vec![],
+            things: vec![],
+        };
+        let lines = supported_linedefs(&map, 0);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].letter, 'A');
+        assert_eq!(lines[0].linedef_idx, 0);
+        assert!((lines[0].length - 100.0).abs() < 1e-3);
+        // Linedef 0→1 points along +X, angle should be ~0.
+        assert!(lines[0].angle.abs() < 1e-3);
+        assert_eq!(lines[1].letter, 'B');
+        assert_eq!(lines[1].linedef_idx, 1);
+        // Linedef 2→0 — from vertex 0's perspective the OTHER endpoint is
+        // vertex 2 at (0, 50), so direction is +Y → angle ≈ pi/2.
+        assert!((lines[1].angle - std::f32::consts::FRAC_PI_2).abs() < 1e-3);
+    }
 }

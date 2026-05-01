@@ -47,7 +47,18 @@ pub fn draw(ctx: &egui::Context, state: &mut EditorState, bank: &mut TextureBank
         });
 
     if !keep_open {
+        cancel_pick(state);
         state.viewer_open = false;
+    }
+}
+
+/// Cancel an in-progress pick — restore the stashed dialog so the user
+/// returns to the editor where they were. No-op if no pick is active.
+pub fn cancel_pick(state: &mut EditorState) {
+    if state.viewer_pick.take().is_some() {
+        if let Some(stashed) = state.dialog_pending.take() {
+            state.dialog = Some(stashed);
+        }
     }
 }
 
@@ -56,16 +67,20 @@ fn title_strip(ui: &mut egui::Ui, keep_open: &mut bool, state: &EditorState) {
     let (rect, _) = ui.allocate_exact_size(desired, Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme::MENU_HILITE_BG);
-    let title = match state.viewer_category {
-        ViewerCategory::Walls => "Choose a Wall Texture",
-        ViewerCategory::Flats => "Choose a Floor/Ceiling Texture",
-        ViewerCategory::Sprites => "Sprites",
+    let pick_active = state.viewer_pick.is_some();
+    let title = match (state.viewer_category, pick_active) {
+        (ViewerCategory::Walls, true) => "Pick a Wall Texture",
+        (ViewerCategory::Flats, true) => "Pick a Floor/Ceiling Texture",
+        (ViewerCategory::Sprites, true) => "Pick a Sprite",
+        (ViewerCategory::Walls, false) => "Choose a Wall Texture",
+        (ViewerCategory::Flats, false) => "Choose a Floor/Ceiling Texture",
+        (ViewerCategory::Sprites, false) => "Sprites",
     };
     painter.text(
         egui::pos2(rect.left() + 6.0, rect.center().y),
         Align2::LEFT_CENTER,
         title,
-        egui::FontId::new(12.0, egui::FontFamily::Monospace),
+        egui::FontId::new(13.0, egui::FontFamily::Monospace),
         theme::MENU_HILITE_FG,
     );
     // [X] close affordance on the right.
@@ -77,7 +92,7 @@ fn title_strip(ui: &mut egui::Ui, keep_open: &mut bool, state: &EditorState) {
         close_rect.center(),
         Align2::CENTER_CENTER,
         "[X]",
-        egui::FontId::new(12.0, egui::FontFamily::Monospace),
+        egui::FontId::new(13.0, egui::FontFamily::Monospace),
         theme::MENU_HILITE_FG,
     );
     let close_resp = ui.interact(close_rect, egui::Id::new("viewer_close"), Sense::click());
@@ -112,7 +127,7 @@ fn tabs(ui: &mut egui::Ui, state: &mut EditorState) {
             tab_rect.center(),
             Align2::CENTER_CENTER,
             *label,
-            egui::FontId::new(12.0, egui::FontFamily::Monospace),
+            egui::FontId::new(13.0, egui::FontFamily::Monospace),
             fg,
         );
         // Subtle separator between tabs.
@@ -206,7 +221,7 @@ fn grid(ui: &mut egui::Ui, state: &mut EditorState, bank: &mut TextureBank, name
                     img_rect.center(),
                     Align2::CENTER_CENTER,
                     "?",
-                    egui::FontId::new(20.0, egui::FontFamily::Monospace),
+                    egui::FontId::new(21.0, egui::FontFamily::Monospace),
                     theme::VGA_DARK_GRAY,
                 );
             }
@@ -221,13 +236,41 @@ fn grid(ui: &mut egui::Ui, state: &mut EditorState, bank: &mut TextureBank, name
                 label_rect.center(),
                 Align2::CENTER_CENTER,
                 name,
-                egui::FontId::new(11.0, egui::FontFamily::Monospace),
+                egui::FontId::new(12.0, egui::FontFamily::Monospace),
                 label_color,
             );
 
             if resp.clicked() {
-                state.status_message = Some(format!("Selected texture: {name}"));
+                if state.viewer_pick.is_some() {
+                    apply_pick(state, name);
+                } else {
+                    state.status_message = Some(format!("Selected texture: {name}"));
+                }
             }
         }
     });
+}
+
+/// Apply a texture-picker click: write `name` into the matching field of the
+/// stashed dialog, then close the viewer and restore the dialog.
+fn apply_pick(state: &mut EditorState, name: &str) {
+    use super::state::{Dialog, PickTarget};
+    let target = match state.viewer_pick.take() {
+        Some(t) => t,
+        None => return,
+    };
+    if let Some(mut stashed) = state.dialog_pending.take() {
+        match (target, &mut stashed) {
+            (PickTarget::SectorFloor, Dialog::EditSector { floor_texture, .. }) => {
+                *floor_texture = name.to_string();
+            }
+            (PickTarget::SectorCeiling, Dialog::EditSector { ceiling_texture, .. }) => {
+                *ceiling_texture = name.to_string();
+            }
+            _ => {} // mismatch: just restore stashed dialog as-is
+        }
+        state.dialog = Some(stashed);
+    }
+    state.viewer_open = false;
+    state.status_message = Some(format!("Picked: {name}"));
 }

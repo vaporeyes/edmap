@@ -17,6 +17,12 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
     let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
 
     let hover = compute_hover(&response, state);
+    // Publish the hover to state so the sidebar can show preview details when
+    // nothing is selected. Read on the next frame.
+    state.hover_object = match hover {
+        Some(Hover::Vertex(i)) | Some(Hover::LineDef(i)) | Some(Hover::Thing(i)) => Some(i),
+        None => None,
+    };
     handle_input(ui, &response, state, hover);
 
     let painter = ui.painter_at(available);
@@ -65,13 +71,19 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
             let pb = to_screen(egui::pos2(b.x as f32, b.y as f32));
             painter.line_segment([pa, pb], Stroke::new(width, color));
         }
-        // Vertex dots.
+        // Vertex dots. In Vertex mode, hovered vertex gets a yellow auto-highlight
+        // square (matches original EdMap behavior); selected vertex is bright red.
         for (i, v) in map.vertices.iter().enumerate() {
             let p = to_screen(egui::pos2(v.x as f32, v.y as f32));
             let selected = state.mode == SelectionMode::Vertex && state.selection.contains(&i);
             let hovered = matches!(hover, Some(Hover::Vertex(h)) if h == i);
-            let color = if selected || hovered { theme::LINEDEF_SELECTED } else { theme::VERTEX_DOT };
-            let size = if selected || hovered { 4.0 } else { 2.0 };
+            let (color, size) = if selected {
+                (theme::LINEDEF_SELECTED, 5.0)
+            } else if hovered {
+                (theme::VERTEX_HOVER, 5.0)
+            } else {
+                (theme::VERTEX_DOT, 2.0)
+            };
             painter.rect_filled(
                 egui::Rect::from_center_size(p, egui::vec2(size, size)),
                 0.0,
@@ -91,7 +103,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
         }
     } else {
         let center = available.center();
-        let font = egui::FontId::new(13.0, egui::FontFamily::Monospace);
+        let font = egui::FontId::new(14.0, egui::FontFamily::Monospace);
         painter.text(
             center,
             egui::Align2::CENTER_CENTER,
