@@ -18,11 +18,14 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
     separator(ui);
     mode_tabs(ui, state);
     separator(ui);
-    selection_block(ui, state);
+    counter_line(ui, state);
     separator(ui);
-    compass_rosette(ui);
-    separator(ui);
-    linedef_table(ui, state);
+    match state.mode {
+        SelectionMode::LineDef => linedef_panel(ui, state),
+        SelectionMode::Vertex => vertex_panel(ui, state),
+        SelectionMode::Sector => sector_panel(ui, state),
+        SelectionMode::Thing => thing_panel(ui, state),
+    }
 
     if let Some(msg) = &state.status_message {
         separator(ui);
@@ -141,7 +144,7 @@ fn mode_tabs(ui: &mut egui::Ui, state: &mut EditorState) {
     });
 }
 
-fn selection_block(ui: &mut egui::Ui, state: &EditorState) {
+fn counter_line(ui: &mut egui::Ui, state: &EditorState) {
     let frame = egui::Frame::none()
         .fill(theme::SIDEBAR_BG)
         .inner_margin(egui::Margin::symmetric(4.0, 2.0));
@@ -149,8 +152,6 @@ fn selection_block(ui: &mut egui::Ui, state: &EditorState) {
         let total = state.total_for_mode();
         let sel = state.selection.len();
         ui.colored_label(theme::VGA_WHITE, format!("{sel}/{total}"));
-        ui.colored_label(theme::VGA_BRIGHT_CYAN, "Supported");
-        ui.colored_label(theme::VGA_BRIGHT_CYAN, "LineDefs:");
     });
 }
 
@@ -190,40 +191,198 @@ fn compass_rosette(ui: &mut egui::Ui) {
     });
 }
 
-fn linedef_table(ui: &mut egui::Ui, state: &EditorState) {
+/// Numbered LineDef flag list. Order matches the EdMap UX spec verbatim.
+/// Each entry: (number 1..9, label, bitmask).
+const LINEDEF_FLAGS: &[(u8, &str, u16)] = &[
+    (1, "block all",     crate::wad::LineDef::FLAG_BLOCK_ALL),
+    (2, "block enemy",   crate::wad::LineDef::FLAG_BLOCK_MONSTERS),
+    (3, "two-sided",     crate::wad::LineDef::FLAG_TWO_SIDED),
+    (4, "upper pegged",  crate::wad::LineDef::FLAG_UPPER_UNPEGGED),
+    (5, "lower pegged",  crate::wad::LineDef::FLAG_LOWER_UNPEGGED),
+    (6, "secret wall",   crate::wad::LineDef::FLAG_SECRET),
+    (7, "block sound",   crate::wad::LineDef::FLAG_BLOCK_SOUND),
+    (8, "never  map",    crate::wad::LineDef::FLAG_NEVER_ON_MAP),
+    (9, "start on map",  crate::wad::LineDef::FLAG_ALWAYS_ON_MAP),
+];
+
+fn linedef_panel(ui: &mut egui::Ui, state: &EditorState) {
+    let Some(map) = &state.map else {
+        return placeholder(ui, "(no map)");
+    };
+    let ld_idx = state.selection.first().copied().unwrap_or(0);
+    let Some(ld) = map.linedefs.get(ld_idx) else {
+        return placeholder(ui, "(no linedef)");
+    };
+
+    // Numbered flag list.
     let frame = egui::Frame::none()
         .fill(theme::SIDEBAR_BG)
         .inner_margin(egui::Margin::symmetric(4.0, 2.0));
     frame.show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            ui.colored_label(theme::VGA_BRIGHT_CYAN, "LD#");
-            ui.colored_label(theme::VGA_BRIGHT_CYAN, "length");
-        });
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        for (num, label, mask) in LINEDEF_FLAGS {
+            let set = ld.flags & mask != 0;
+            let bullet = if set { "\u{2022}" } else { "\u{25CB}" }; // • / ○
+            let bullet_color = if set { theme::VGA_YELLOW } else { theme::VGA_BRIGHT_CYAN };
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.colored_label(theme::VGA_WHITE, format!("{num}"));
+                ui.colored_label(bullet_color, bullet);
+                ui.colored_label(theme::VGA_WHITE, *label);
+            });
+        }
+    });
+
+    separator(ui);
+
+    // Action / length / texture-offset block.
+    let frame = egui::Frame::none()
+        .fill(theme::SIDEBAR_BG)
+        .inner_margin(egui::Margin::symmetric(4.0, 2.0));
+    frame.show(ui, |ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        let action = if ld.special_type == 0 {
+            "(no action)".to_string()
+        } else {
+            format!("action {}", ld.special_type)
+        };
+        ui.colored_label(theme::VGA_WHITE, action);
+
+        // length — Euclidean distance between endpoint vertices.
+        if let (Some(a), Some(b)) = (
+            map.vertices.get(ld.start_vertex as usize),
+            map.vertices.get(ld.end_vertex as usize),
+        ) {
+            let dx = (a.x - b.x) as f32;
+            let dy = (a.y - b.y) as f32;
+            let len = (dx * dx + dy * dy).sqrt();
+            ui.colored_label(theme::VGA_WHITE, format!("length {len:.3}"));
+        }
+
+        // SD#: x_offset, y_offset (front sidedef).
+        if ld.front_sidedef != crate::wad::LineDef::NO_SIDEDEF {
+            if let Some(sd) = map.sidedefs.get(ld.front_sidedef as usize) {
+                ui.colored_label(
+                    theme::VGA_WHITE,
+                    format!("{}: {},{}", ld.front_sidedef, sd.x_offset, sd.y_offset),
+                );
+            }
+        }
+    });
+
+    separator(ui);
+
+    // Texture name rows. Front sidedef gets U/M/L; back sidedef (when present) gets N/B/R.
+    // The EdMap convention groups the upper/main/lower per side; we use distinct letters
+    // for the back side so labels stay short and unique.
+    let frame = egui::Frame::none()
+        .fill(theme::SIDEBAR_BG)
+        .inner_margin(egui::Margin::symmetric(4.0, 2.0));
+    frame.show(ui, |ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        if ld.front_sidedef != crate::wad::LineDef::NO_SIDEDEF {
+            if let Some(sd) = map.sidedefs.get(ld.front_sidedef as usize) {
+                texture_row(ui, "U", &sd.upper_texture);
+                texture_row(ui, "M", &sd.middle_texture);
+                texture_row(ui, "L", &sd.lower_texture);
+            }
+        }
+        if ld.is_two_sided() && ld.back_sidedef != crate::wad::LineDef::NO_SIDEDEF {
+            if let Some(sd) = map.sidedefs.get(ld.back_sidedef as usize) {
+                texture_row(ui, "N", &sd.upper_texture);
+                texture_row(ui, "B", &sd.middle_texture);
+                texture_row(ui, "R", &sd.lower_texture);
+            }
+        }
+    });
+}
+
+fn texture_row(ui: &mut egui::Ui, prefix: &str, name: &str) {
+    let display = if name.is_empty() || name == "-" { "-".to_string() } else { name.to_string() };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.colored_label(theme::VGA_BRIGHT_CYAN, format!("{prefix}:"));
+        ui.colored_label(theme::VGA_WHITE, display);
+    });
+}
+
+fn vertex_panel(ui: &mut egui::Ui, state: &EditorState) {
+    let frame = egui::Frame::none()
+        .fill(theme::SIDEBAR_BG)
+        .inner_margin(egui::Margin::symmetric(4.0, 2.0));
+    frame.show(ui, |ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
         let Some(map) = &state.map else {
             ui.colored_label(theme::VGA_DARK_GRAY, "(no map)");
             return;
         };
-        // Show first 3 selected LineDefs by length, or first 3 in the map if no selection.
-        let take: Vec<usize> = if state.selection.is_empty() {
-            (0..map.linedefs.len().min(3)).collect()
-        } else {
-            state.selection.iter().take(3).copied().collect()
+        let idx = state.selection.first().copied().unwrap_or(0);
+        let Some(v) = map.vertices.get(idx) else {
+            ui.colored_label(theme::VGA_DARK_GRAY, "(no vertex)");
+            return;
         };
-        for idx in take {
-            let Some(ld) = map.linedefs.get(idx) else { continue };
-            let (Some(a), Some(b)) = (
-                map.vertices.get(ld.start_vertex as usize),
-                map.vertices.get(ld.end_vertex as usize),
-            ) else { continue };
-            let dx = (a.x - b.x) as f32;
-            let dy = (a.y - b.y) as f32;
-            let len = (dx * dx + dy * dy).sqrt();
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                ui.colored_label(theme::VGA_WHITE, format!("{idx:>3}"));
-                ui.colored_label(theme::VGA_WHITE, format!("{len:>7.3}"));
-            });
-        }
+        ui.colored_label(theme::VGA_WHITE, format!("Vertex {idx}"));
+        ui.colored_label(theme::VGA_WHITE, format!("X: {:>6}", v.x));
+        ui.colored_label(theme::VGA_WHITE, format!("Y: {:>6}", v.y));
+    });
+}
+
+fn sector_panel(ui: &mut egui::Ui, state: &EditorState) {
+    let frame = egui::Frame::none()
+        .fill(theme::SIDEBAR_BG)
+        .inner_margin(egui::Margin::symmetric(4.0, 2.0));
+    frame.show(ui, |ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        let Some(map) = &state.map else {
+            ui.colored_label(theme::VGA_DARK_GRAY, "(no map)");
+            return;
+        };
+        let idx = state.selection.first().copied().unwrap_or(0);
+        let Some(s) = map.sectors.get(idx) else {
+            ui.colored_label(theme::VGA_DARK_GRAY, "(no sector)");
+            return;
+        };
+        ui.colored_label(theme::VGA_WHITE, format!("Sector {idx}"));
+        ui.colored_label(theme::VGA_WHITE, format!("ceiling: {}", s.ceiling_height));
+        ui.colored_label(theme::VGA_WHITE, format!("floor:   {}", s.floor_height));
+        ui.colored_label(theme::VGA_WHITE, format!("light:   {}", s.light_level));
+        ui.colored_label(theme::VGA_WHITE, format!("type:    {}", s.sector_type));
+        ui.colored_label(theme::VGA_WHITE, format!("tag:     {}", s.tag));
+        ui.add_space(2.0);
+        texture_row(ui, "C", &s.ceiling_texture);
+        texture_row(ui, "F", &s.floor_texture);
+    });
+}
+
+fn thing_panel(ui: &mut egui::Ui, state: &EditorState) {
+    let frame = egui::Frame::none()
+        .fill(theme::SIDEBAR_BG)
+        .inner_margin(egui::Margin::symmetric(4.0, 2.0));
+    frame.show(ui, |ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        let Some(map) = &state.map else {
+            ui.colored_label(theme::VGA_DARK_GRAY, "(no map)");
+            return;
+        };
+        let idx = state.selection.first().copied().unwrap_or(0);
+        let Some(t) = map.things.get(idx) else {
+            ui.colored_label(theme::VGA_DARK_GRAY, "(no thing)");
+            return;
+        };
+        ui.colored_label(theme::VGA_WHITE, format!("Thing {idx}"));
+        ui.colored_label(theme::VGA_WHITE, format!("X: {:>6}", t.x));
+        ui.colored_label(theme::VGA_WHITE, format!("Y: {:>6}", t.y));
+        ui.colored_label(theme::VGA_WHITE, format!("angle: {}", t.angle));
+        ui.colored_label(theme::VGA_WHITE, format!("type:  {}", t.thing_type));
+        ui.colored_label(theme::VGA_WHITE, format!("flags: {:#06x}", t.flags));
+    });
+}
+
+fn placeholder(ui: &mut egui::Ui, msg: &str) {
+    let frame = egui::Frame::none()
+        .fill(theme::SIDEBAR_BG)
+        .inner_margin(egui::Margin::symmetric(4.0, 4.0));
+    frame.show(ui, |ui| {
+        ui.colored_label(theme::VGA_DARK_GRAY, msg);
     });
 }

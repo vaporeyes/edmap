@@ -1,16 +1,22 @@
 // ABOUTME: Map viewport — renders grid, linedefs, vertices, and things on a black canvas.
-// ABOUTME: Handles pan (middle drag), zoom (scroll wheel), and cursor world-space tracking.
+// ABOUTME: Handles pan/zoom, cursor tracking, hover preview, and click-to-select per current mode.
 
 use eframe::egui::{self, Pos2, Stroke};
 
-use super::state::EditorState;
+use super::hittest;
+use super::state::{EditorState, SelectionMode};
 use crate::theme;
+
+/// Screen-pixel pick tolerance — how forgiving the click hit test is.
+/// Translated to world units by dividing by the current zoom.
+const PICK_TOL_PIXELS: f32 = 8.0;
 
 pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
     let available = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
 
-    handle_input(ui, &response, state);
+    let hover = compute_hover(&response, state);
+    handle_input(ui, &response, state, hover);
 
     let painter = ui.painter_at(available);
     painter.rect_filled(available, 0.0, theme::VIEWPORT_BG);
@@ -33,32 +39,54 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
     }
 
     if let Some(map) = &state.map {
-        for ld in &map.linedefs {
+        // LineDefs first (so vertex dots draw on top).
+        for (i, ld) in map.linedefs.iter().enumerate() {
             let (Some(a), Some(b)) = (
                 map.vertices.get(ld.start_vertex as usize),
                 map.vertices.get(ld.end_vertex as usize),
             ) else { continue };
-            let color = if ld.is_two_sided() { theme::LINEDEF_TWO_SIDED } else { theme::LINEDEF_NORMAL };
+            let selected = state.mode == SelectionMode::LineDef && state.selection.contains(&i);
+            let highlighted_sector = state.mode == SelectionMode::Sector
+                && sidedef_in_selected_sector(map, ld, &state.selection);
+            let hovered = matches!(hover, Some(Hover::LineDef(h)) if h == i);
+
+            let color = if selected || hovered {
+                theme::LINEDEF_SELECTED
+            } else if highlighted_sector {
+                theme::VGA_YELLOW
+            } else if ld.is_two_sided() {
+                theme::LINEDEF_TWO_SIDED
+            } else {
+                theme::LINEDEF_NORMAL
+            };
+            let width = if selected || hovered { 2.0 } else { 1.0 };
             let pa = to_screen(egui::pos2(a.x as f32, a.y as f32));
             let pb = to_screen(egui::pos2(b.x as f32, b.y as f32));
-            painter.line_segment([pa, pb], Stroke::new(1.0, color));
+            painter.line_segment([pa, pb], Stroke::new(width, color));
         }
-        for v in &map.vertices {
+        // Vertex dots.
+        for (i, v) in map.vertices.iter().enumerate() {
             let p = to_screen(egui::pos2(v.x as f32, v.y as f32));
-            painter.rect_filled(egui::Rect::from_center_size(p, egui::vec2(2.0, 2.0)), 0.0, theme::VERTEX_DOT);
+            let selected = state.mode == SelectionMode::Vertex && state.selection.contains(&i);
+            let hovered = matches!(hover, Some(Hover::Vertex(h)) if h == i);
+            let color = if selected || hovered { theme::LINEDEF_SELECTED } else { theme::VERTEX_DOT };
+            let size = if selected || hovered { 4.0 } else { 2.0 };
+            painter.rect_filled(
+                egui::Rect::from_center_size(p, egui::vec2(size, size)),
+                0.0,
+                color,
+            );
         }
-        for t in &map.things {
+        // Things (X markers).
+        for (i, t) in map.things.iter().enumerate() {
             let p = to_screen(egui::pos2(t.x as f32, t.y as f32));
-            // X marker — matches the original's thing glyph.
-            let s = 4.0;
-            painter.line_segment(
-                [p + egui::vec2(-s, -s), p + egui::vec2(s, s)],
-                Stroke::new(1.0, theme::THING_MARK),
-            );
-            painter.line_segment(
-                [p + egui::vec2(-s, s), p + egui::vec2(s, -s)],
-                Stroke::new(1.0, theme::THING_MARK),
-            );
+            let selected = state.mode == SelectionMode::Thing && state.selection.contains(&i);
+            let hovered = matches!(hover, Some(Hover::Thing(h)) if h == i);
+            let color = if selected || hovered { theme::LINEDEF_SELECTED } else { theme::THING_MARK };
+            let s = if selected || hovered { 6.0 } else { 4.0 };
+            let stroke = Stroke::new(if selected || hovered { 2.0 } else { 1.0 }, color);
+            painter.line_segment([p + egui::vec2(-s, -s), p + egui::vec2(s, s)], stroke);
+            painter.line_segment([p + egui::vec2(-s, s), p + egui::vec2(s, -s)], stroke);
         }
     } else {
         let center = available.center();
@@ -73,13 +101,65 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
     }
 }
 
-fn handle_input(ui: &mut egui::Ui, response: &egui::Response, state: &mut EditorState) {
+/// What the cursor is currently hovering over for the active mode.
+#[derive(Clone, Copy)]
+enum Hover {
+    Vertex(usize),
+    LineDef(usize),
+    Thing(usize),
+}
+
+fn compute_hover(response: &egui::Response, state: &EditorState) -> Option<Hover> {
+    let _ = response.hover_pos()?;
+    let map = state.map.as_ref()?;
+    let cursor = (state.cursor_world.x, state.cursor_world.y);
+    let tol = (PICK_TOL_PIXELS / state.view_zoom).max(0.5);
+    match state.mode {
+        SelectionMode::Vertex => hittest::nearest_vertex(map, cursor, tol).map(Hover::Vertex),
+        SelectionMode::LineDef => hittest::nearest_linedef(map, cursor, tol).map(Hover::LineDef),
+        SelectionMode::Sector => {
+            // Hover preview for sector mode highlights the nearest LineDef so user
+            // sees which line they're "facing" before the click resolves to a sector.
+            hittest::nearest_linedef(map, cursor, tol).map(Hover::LineDef)
+        }
+        SelectionMode::Thing => hittest::nearest_thing(map, cursor, tol).map(Hover::Thing),
+    }
+}
+
+/// True if `ld`'s front or back sidedef belongs to any currently-selected sector.
+/// Used to highlight an entire sector's boundary linedefs in sector mode.
+fn sidedef_in_selected_sector(
+    map: &crate::wad::MapData,
+    ld: &crate::wad::LineDef,
+    selection: &[usize],
+) -> bool {
+    use crate::wad::LineDef;
+    for sd_idx in [ld.front_sidedef, ld.back_sidedef] {
+        if sd_idx == LineDef::NO_SIDEDEF {
+            continue;
+        }
+        let Some(sd) = map.sidedefs.get(sd_idx as usize) else { continue };
+        if selection.iter().any(|&s| s == sd.sector as usize) {
+            return true;
+        }
+    }
+    false
+}
+
+fn handle_input(
+    ui: &mut egui::Ui,
+    response: &egui::Response,
+    state: &mut EditorState,
+    hover: Option<Hover>,
+) {
     let rect = response.rect;
     if let Some(pos) = response.hover_pos() {
         state.cursor_world = screen_to_world(state, rect, pos);
     }
     // Pan: middle-button or right-button drag.
-    if response.dragged_by(egui::PointerButton::Middle) || response.dragged_by(egui::PointerButton::Secondary) {
+    if response.dragged_by(egui::PointerButton::Middle)
+        || response.dragged_by(egui::PointerButton::Secondary)
+    {
         let delta = response.drag_delta();
         state.view_center.x -= delta.x / state.view_zoom;
         // egui Y goes down; world Y goes up — invert.
@@ -90,6 +170,51 @@ fn handle_input(ui: &mut egui::Ui, response: &egui::Response, state: &mut Editor
     if scroll != 0.0 && response.hovered() {
         let factor = if scroll > 0.0 { 1.1 } else { 1.0 / 1.1 };
         state.view_zoom = (state.view_zoom * factor).clamp(0.01, 16.0);
+    }
+    // Click-to-select. Shift extends the selection; plain click replaces it.
+    if response.clicked() {
+        let shift = ui.input(|i| i.modifiers.shift);
+        apply_click(state, hover, shift);
+    }
+}
+
+fn apply_click(state: &mut EditorState, hover: Option<Hover>, shift: bool) {
+    let Some(map) = state.map.as_ref() else { return };
+    let cursor = (state.cursor_world.x, state.cursor_world.y);
+    let tol = (PICK_TOL_PIXELS / state.view_zoom).max(0.5);
+
+    let picked: Option<usize> = match state.mode {
+        SelectionMode::Vertex => match hover {
+            Some(Hover::Vertex(i)) => Some(i),
+            _ => hittest::nearest_vertex(map, cursor, tol),
+        },
+        SelectionMode::LineDef => match hover {
+            Some(Hover::LineDef(i)) => Some(i),
+            _ => hittest::nearest_linedef(map, cursor, tol),
+        },
+        SelectionMode::Thing => match hover {
+            Some(Hover::Thing(i)) => Some(i),
+            _ => hittest::nearest_thing(map, cursor, tol),
+        },
+        SelectionMode::Sector => hittest::sector_under(map, cursor, tol),
+    };
+
+    let Some(idx) = picked else {
+        if !shift {
+            state.selection.clear();
+        }
+        return;
+    };
+
+    if shift {
+        if let Some(pos) = state.selection.iter().position(|&s| s == idx) {
+            state.selection.remove(pos); // toggle off
+        } else {
+            state.selection.push(idx);
+        }
+    } else {
+        state.selection.clear();
+        state.selection.push(idx);
     }
 }
 

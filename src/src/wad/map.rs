@@ -47,6 +47,17 @@ impl LineDef {
     pub const SIZE: usize = 14;
     pub const NO_SIDEDEF: u16 = 0xFFFF;
 
+    // Bitflag values per the public DOOM linedef spec.
+    pub const FLAG_BLOCK_ALL: u16 = 0x0001;
+    pub const FLAG_BLOCK_MONSTERS: u16 = 0x0002;
+    pub const FLAG_TWO_SIDED: u16 = 0x0004;
+    pub const FLAG_UPPER_UNPEGGED: u16 = 0x0008;
+    pub const FLAG_LOWER_UNPEGGED: u16 = 0x0010;
+    pub const FLAG_SECRET: u16 = 0x0020;
+    pub const FLAG_BLOCK_SOUND: u16 = 0x0040;
+    pub const FLAG_NEVER_ON_MAP: u16 = 0x0080;
+    pub const FLAG_ALWAYS_ON_MAP: u16 = 0x0100;
+
     pub fn parse_all(bytes: &[u8]) -> Result<Vec<Self>, WadError> {
         if bytes.len() % Self::SIZE != 0 {
             return Err(WadError::TruncatedLump {

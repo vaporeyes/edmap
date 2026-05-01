@@ -3,6 +3,7 @@
 
 mod commands;
 mod dialog;
+mod hittest;
 mod keybindings;
 mod menu;
 mod sidebar;
