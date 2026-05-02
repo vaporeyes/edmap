@@ -36,6 +36,9 @@ pub fn draw(ctx: &egui::Context, state: &mut EditorState) {
                         .inner_margin(egui::Margin::same(8.0))
                         .show(ui, |ui| {
                             ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                            // TextEdit fills with visuals.extreme_bg_color; force it
+                            // white so black text stays readable on dark themes.
+                            ui.visuals_mut().extreme_bg_color = theme::VGA_WHITE;
                             close = body(ui, state, dialog);
                         });
                 });
@@ -1778,10 +1781,14 @@ fn export_picture_body(
     });
     ui.add_space(4.0);
 
-    ui.checkbox(&mut with_grid, "Grid dots");
-    ui.checkbox(&mut with_vertices, "Vertex dots");
-    ui.checkbox(&mut with_things, "Things (X markers)");
-    ui.add_enabled(with_things, egui::Checkbox::new(&mut with_thing_bboxes, "Thing bounding boxes"));
+    let cb_text = |s: &str| RichText::new(s).color(theme::MENU_FG);
+    ui.checkbox(&mut with_grid, cb_text("Grid dots"));
+    ui.checkbox(&mut with_vertices, cb_text("Vertex dots"));
+    ui.checkbox(&mut with_things, cb_text("Things (X markers)"));
+    ui.add_enabled(
+        with_things,
+        egui::Checkbox::new(&mut with_thing_bboxes, cb_text("Thing bounding boxes")),
+    );
     ui.add_space(8.0);
 
     let close = ui.horizontal(|ui| {

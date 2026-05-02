@@ -348,16 +348,7 @@ pub fn run_pending(state: &mut EditorState, action: &super::state::PendingAction
     use super::state::PendingAction;
     match action {
         PendingAction::Quit => std::process::exit(0),
-        PendingAction::NewMap => {
-            state.map = None;
-            state.wad = None;
-            state.wad_path = None;
-            state.selection.clear();
-            state.view_center = egui::pos2(0.0, 0.0);
-            state.view_zoom = 1.0;
-            state.is_dirty = false;
-            state.undo_baseline = None;
-        }
+        PendingAction::NewMap => new_map(state),
         PendingAction::OpenWad => {
             // Caller (menu/keybinding) reroutes through the picker on the next click.
             // We just clear dirty so the next Open doesn't re-trigger the warning.
@@ -3156,4 +3147,170 @@ pub fn test_map(state: &mut EditorState) {
             });
         }
     }
+}
+
+/// Build a brand-new map: a single 256x256 square room centered at the origin
+/// with a Player 1 start in the middle. Stock vanilla DOOM textures are used
+/// so the resulting PWAD plays in any IWAD that has them.
+fn starter_map() -> crate::wad::MapData {
+    use crate::wad::{LineDef, MapData, Sector, SideDef, Thing, Vertex};
+
+    // Vertices in CCW order (Y-up): BL, TL, TR, BR. With this winding, each
+    // linedef's right-perpendicular faces the room interior, so single-sided
+    // fronts point inward.
+    let vertices = vec![
+        Vertex { x: -128, y: -128 }, // 0 BL
+        Vertex { x: -128, y:  128 }, // 1 TL
+        Vertex { x:  128, y:  128 }, // 2 TR
+        Vertex { x:  128, y: -128 }, // 3 BR
+    ];
+
+    let mid = "STARTAN2".to_string();
+    let dash = "-".to_string();
+    let sidedefs: Vec<SideDef> = (0..4)
+        .map(|_| SideDef {
+            x_offset: 0,
+            y_offset: 0,
+            upper_texture: dash.clone(),
+            lower_texture: dash.clone(),
+            middle_texture: mid.clone(),
+            sector: 0,
+        })
+        .collect();
+
+    let mk_ld = |a: u16, b: u16, sd: u16| LineDef {
+        start_vertex: a,
+        end_vertex: b,
+        flags: LineDef::FLAG_BLOCK_ALL,
+        special_type: 0,
+        sector_tag: 0,
+        front_sidedef: sd,
+        back_sidedef: LineDef::NO_SIDEDEF,
+    };
+    let linedefs = vec![
+        mk_ld(0, 1, 0),
+        mk_ld(1, 2, 1),
+        mk_ld(2, 3, 2),
+        mk_ld(3, 0, 3),
+    ];
+
+    let sectors = vec![Sector {
+        floor_height: 0,
+        ceiling_height: 128,
+        floor_texture: "FLOOR4_8".into(),
+        ceiling_texture: "CEIL3_5".into(),
+        light_level: 160,
+        sector_type: 0,
+        tag: 0,
+    }];
+
+    let things = vec![Thing {
+        x: 0,
+        y: 0,
+        angle: 90, // North
+        thing_type: 1, // Player 1 start
+        flags: 0x0007, // present on all single-player skills
+    }];
+
+    MapData {
+        name: "MAP01".into(),
+        vertices,
+        linedefs,
+        sidedefs,
+        sectors,
+        things,
+    }
+}
+
+/// Replace the editor's state with a fresh starter map. Used by File > New
+/// map and by the SaveWarning's PendingAction::NewMap flow.
+pub fn new_map(state: &mut EditorState) {
+    let map = starter_map();
+    state.wad = None;
+    state.wad_path = None;
+    state.map = Some(map);
+    state.mode = SelectionMode::Vertex;
+    state.selection.clear();
+    state.view_center = egui::pos2(0.0, 0.0);
+    state.view_zoom = 1.0;
+    state.is_dirty = true;
+    state.undo_baseline = state.map.clone();
+    state.undo_stack.clear();
+    state.line_draw = None;
+    state.last_check_results.clear();
+    state.status_message = Some(
+        "New map: 256x256 starter room with Player 1 start. Save with Ctrl-F2.".into(),
+    );
+}
+
+/// Set every sidedef of `sector_idx` to use `tex` for upper/lower/middle wall
+/// slots. For single-sided lines only middle is visible; for two-sided lines
+/// upper/lower show on height transitions, so writing all three is the most
+/// useful "set this room's walls" operation.
+pub fn set_sector_wall_textures(state: &mut EditorState, sector_idx: u16, tex: &str) {
+    if state.map.is_none() { return; }
+    push_undo(state);
+    let map = state.map.as_mut().unwrap();
+    let mut touched = 0usize;
+    for sd in map.sidedefs.iter_mut() {
+        if sd.sector == sector_idx {
+            sd.upper_texture = tex.to_string();
+            sd.middle_texture = tex.to_string();
+            sd.lower_texture = tex.to_string();
+            touched += 1;
+        }
+    }
+    if touched > 0 {
+        state.is_dirty = true;
+    }
+}
+
+/// Open the texture viewer in pick mode for the selected sector's ceiling.
+/// Stashes a fresh EditSector dialog so the picked texture flows back into it.
+pub fn open_sector_ceiling_picker(state: &mut EditorState) {
+    if !ensure_sector_dialog_for_pick(state) { return; }
+    state.viewer_pick = Some(super::state::PickTarget::SectorCeiling);
+    state.viewer_category = super::state::ViewerCategory::Flats;
+    state.viewer_open = true;
+}
+
+/// Same idea, for floor.
+pub fn open_sector_floor_picker(state: &mut EditorState) {
+    if !ensure_sector_dialog_for_pick(state) { return; }
+    state.viewer_pick = Some(super::state::PickTarget::SectorFloor);
+    state.viewer_category = super::state::ViewerCategory::Flats;
+    state.viewer_open = true;
+}
+
+/// K hotkey: open the wall-texture picker that, on click, will rewrite every
+/// sidedef in the selected sector. No EditSector dialog is stashed because the
+/// pick applies directly to the map.
+pub fn open_sector_walls_picker(state: &mut EditorState) {
+    let Some(&sector_idx) = state.selection.first() else { return };
+    if state.map.is_none() { return; }
+    state.viewer_pick = Some(super::state::PickTarget::SectorWalls(sector_idx as u16));
+    state.viewer_category = super::state::ViewerCategory::Walls;
+    state.viewer_open = true;
+    // No dialog stash — apply_pick writes directly to the map.
+    state.dialog_pending = None;
+}
+
+/// Build (or reuse) an EditSector dialog for the currently-selected sector and
+/// stash it in `dialog_pending` so a subsequent texture pick has a target.
+/// Returns false if no sector is available.
+fn ensure_sector_dialog_for_pick(state: &mut EditorState) -> bool {
+    let Some(&idx) = state.selection.first() else { return false };
+    let Some(map) = state.map.as_ref() else { return false };
+    let Some(s) = map.sectors.get(idx) else { return false };
+    state.dialog_pending = Some(super::state::Dialog::EditSector {
+        idx,
+        floor_height: s.floor_height.to_string(),
+        ceiling_height: s.ceiling_height.to_string(),
+        light: s.light_level.to_string(),
+        sector_type: s.sector_type.to_string(),
+        tag: s.tag.to_string(),
+        floor_texture: s.floor_texture.clone(),
+        ceiling_texture: s.ceiling_texture.clone(),
+    });
+    true
 }

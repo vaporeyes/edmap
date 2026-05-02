@@ -6,13 +6,14 @@ use eframe::egui::{self, Pos2, Stroke};
 use super::commands;
 use super::hittest;
 use super::state::{EditorState, SelectionMode};
+use super::textures::TextureBank;
 use crate::theme;
 
 /// Screen-pixel pick tolerance — how forgiving the click hit test is.
 /// Translated to world units by dividing by the current zoom.
 const PICK_TOL_PIXELS: f32 = 8.0;
 
-pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
+pub fn draw(ui: &mut egui::Ui, state: &mut EditorState, bank: &mut TextureBank) {
     let available = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
 
@@ -128,6 +129,19 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
             font,
             theme::VGA_DARK_GRAY,
         );
+    }
+
+    // Hover-preview a thing's sprite — only meaningful in Thing mode (where the
+    // hover hit test runs against things). Drawn before line-draw so the
+    // rubber-band still appears on top if both are active.
+    if state.mode == SelectionMode::Thing {
+        if let (Some(map), Some(Hover::Thing(idx)), Some(cursor)) =
+            (state.map.as_ref(), hover, response.hover_pos())
+        {
+            if let Some(t) = map.things.get(idx) {
+                paint_thing_sprite_popup(ui.ctx(), state, bank, cursor, t.thing_type);
+            }
+        }
     }
 
     // Line-draw mode: rubber-band from last placed vertex to cursor.
@@ -388,4 +402,68 @@ fn draw_grid(painter: &egui::Painter, rect: egui::Rect, state: &EditorState) {
         }
         x += step;
     }
+}
+
+/// Hover popup for a Thing — shows the matching DOOM sprite (if available in
+/// the loaded WAD) plus the type number. Mirrors the wall/flat preview from
+/// the sidebar so the look is consistent.
+fn paint_thing_sprite_popup(
+    ctx: &egui::Context,
+    state: &EditorState,
+    bank: &mut TextureBank,
+    cursor: egui::Pos2,
+    thing_type: u16,
+) {
+    let Some(wad) = state.wad.as_ref() else { return };
+    let candidates = super::things_table::sprite_candidates(thing_type);
+    let mut chosen: Option<(&'static str, [usize; 2])> = None;
+    for &name in candidates {
+        if let Some(handle) = bank.sprite(ctx, wad, name) {
+            chosen = Some((name, handle.size()));
+            break;
+        }
+    }
+    let Some((name, [w, h])) = chosen else { return };
+    if w == 0 || h == 0 {
+        return;
+    }
+
+    // Re-fetch the handle now that the cache hit/miss is settled.
+    let handle = bank.sprite(ctx, wad, name).unwrap().clone();
+
+    // Scale up so small monster sprites are legible — cap longest edge at 160 px.
+    let max_edge = 160.0_f32;
+    let scale = (max_edge / w as f32).min(max_edge / h as f32).max(1.0);
+    let img_size = egui::vec2(w as f32 * scale, h as f32 * scale);
+    let pad = 4.0;
+    let popup_size = egui::vec2(img_size.x + pad * 2.0, img_size.y + pad * 2.0 + 14.0);
+    let mut origin = cursor + egui::vec2(16.0, 16.0);
+    let screen = ctx.screen_rect();
+    if origin.x + popup_size.x > screen.right() {
+        origin.x = cursor.x - 16.0 - popup_size.x;
+    }
+    if origin.y + popup_size.y > screen.bottom() {
+        origin.y = cursor.y - 16.0 - popup_size.y;
+    }
+
+    egui::Area::new(egui::Id::new(("thing_preview", thing_type)))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(origin)
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::none()
+                .fill(theme::VIEWPORT_BG)
+                .stroke(egui::Stroke::new(1.0, theme::VGA_GRAY))
+                .inner_margin(egui::Margin::same(pad))
+                .show(ui, |ui| {
+                    ui.set_min_size(egui::vec2(img_size.x, img_size.y + 14.0));
+                    let img_rect = egui::Rect::from_min_size(ui.cursor().min, img_size);
+                    egui::Image::new(&handle).fit_to_exact_size(img_size).paint_at(ui, img_rect);
+                    ui.advance_cursor_after_rect(img_rect);
+                    ui.colored_label(
+                        theme::VGA_WHITE,
+                        format!("type {thing_type}  {name}  {w}x{h}"),
+                    );
+                });
+        });
 }

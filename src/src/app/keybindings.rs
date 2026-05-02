@@ -77,16 +77,42 @@ pub fn dispatch(ctx: &egui::Context, state: &mut EditorState) {
 
         // Mode keys outside the menu spec — keyboard-first feel from the original.
         if !any_modifier(&input.modifiers) {
-            if input.key_pressed(Key::Num1) || input.key_pressed(Key::V) {
+            // Sector mode + selected sector: digit and letter keys edit fields
+            // instead of switching modes (matches EdMap's numbered shortcuts).
+            // Tab and V still work for mode switching when this is active.
+            let sector_hotkey_active =
+                state.mode == SelectionMode::Sector && !state.selection.is_empty();
+            if sector_hotkey_active {
+                if input.key_pressed(Key::Num2) {
+                    commands::open_sector_ceiling_picker(state);
+                } else if input.key_pressed(Key::Num4) {
+                    commands::open_sector_floor_picker(state);
+                } else if input.key_pressed(Key::K) {
+                    commands::open_sector_walls_picker(state);
+                } else if input.key_pressed(Key::Num1)
+                    || input.key_pressed(Key::Num3)
+                    || input.key_pressed(Key::Num5)
+                    || input.key_pressed(Key::Num6)
+                    || input.key_pressed(Key::Num7)
+                {
+                    commands::open_properties(state);
+                }
+            }
+            // V always switches to Vertex mode — keeps a letter escape hatch
+            // when sector_hotkey_active blocks the digit-mode-switch keys.
+            if input.key_pressed(Key::V) {
                 commands::set_mode(state, SelectionMode::Vertex);
             }
-            if input.key_pressed(Key::Num2) {
+            if !sector_hotkey_active && input.key_pressed(Key::Num1) {
+                commands::set_mode(state, SelectionMode::Vertex);
+            }
+            if !sector_hotkey_active && input.key_pressed(Key::Num2) {
                 commands::set_mode(state, SelectionMode::LineDef);
             }
-            if input.key_pressed(Key::Num3) {
+            if !sector_hotkey_active && input.key_pressed(Key::Num3) {
                 commands::set_mode(state, SelectionMode::Sector);
             }
-            if input.key_pressed(Key::Num4) {
+            if !sector_hotkey_active && input.key_pressed(Key::Num4) {
                 commands::set_mode(state, SelectionMode::Thing);
             }
             if input.key_pressed(Key::Tab) {

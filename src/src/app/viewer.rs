@@ -259,6 +259,13 @@ fn apply_pick(state: &mut EditorState, name: &str) {
         Some(t) => t,
         None => return,
     };
+    // SectorWalls writes directly into the map's sidedefs — no dialog to restore.
+    if let PickTarget::SectorWalls(sector_idx) = target {
+        super::commands::set_sector_wall_textures(state, sector_idx, name);
+        state.viewer_open = false;
+        state.status_message = Some(format!("Walls of sector {sector_idx} → {name}"));
+        return;
+    }
     if let Some(mut stashed) = state.dialog_pending.take() {
         match (target, &mut stashed) {
             (PickTarget::SectorFloor, Dialog::EditSector { floor_texture, .. }) => {

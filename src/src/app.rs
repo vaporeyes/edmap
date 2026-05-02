@@ -77,7 +77,7 @@ impl eframe::App for EdMapApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(theme::VIEWPORT_BG))
             .show(ctx, |ui| {
-                viewport::draw(ui, &mut self.state);
+                viewport::draw(ui, &mut self.state, &mut self.bank);
             });
 
         // Cascading menu bar lives across the top of the viewport row, sourced from

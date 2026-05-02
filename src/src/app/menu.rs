@@ -228,14 +228,7 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
         ("Info", "System Information") => state.dialog = Some(Dialog::SystemInformation),
         ("File (map)", "New map") => {
             if super::commands::dirty_guard(state, super::state::PendingAction::NewMap) {
-                state.map = None;
-                state.wad = None;
-                state.wad_path = None;
-                state.selection.clear();
-                state.view_center = egui::pos2(0.0, 0.0);
-                state.view_zoom = 1.0;
-                state.is_dirty = false;
-                state.undo_baseline = None;
+                super::commands::new_map(state);
             }
         }
         ("File (map)", "Open map file") => {

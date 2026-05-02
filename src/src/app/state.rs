@@ -301,6 +301,10 @@ pub enum ViewerCategory {
 pub enum PickTarget {
     SectorFloor,
     SectorCeiling,
+    /// Apply the picked wall texture to every sidedef in this sector. Used by
+    /// the K hotkey in Sector mode. Doesn't stash a dialog — it writes back to
+    /// the map directly when a tile is clicked.
+    SectorWalls(u16),
 }
 
 impl PickTarget {
@@ -308,6 +312,7 @@ impl PickTarget {
     pub fn default_category(self) -> ViewerCategory {
         match self {
             PickTarget::SectorFloor | PickTarget::SectorCeiling => ViewerCategory::Flats,
+            PickTarget::SectorWalls(_) => ViewerCategory::Walls,
         }
     }
 }

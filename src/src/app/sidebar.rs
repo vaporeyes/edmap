@@ -237,24 +237,25 @@ fn compass_rosette(ui: &mut egui::Ui, state: &EditorState) {
         .inner_margin(egui::Margin {
             left: 4.0,
             right: 4.0,
-            top: 14.0,
-            bottom: 8.0,
+            top: 4.0,
+            bottom: 4.0,
         });
     frame.show(ui, |ui| {
         // Use the full sidebar width so the dial centers under the column,
-        // not against the left edge. Height is fixed at 76 px which leaves
-        // 8 px of slack between the label-ring and the panel edges.
+        // not against the left edge. Height kept tight (60 px) so the rosette
+        // fits in the sidebar's tail when the panels above are tall.
         let avail_w = ui.available_width().max(80.0);
-        let size = egui::vec2(avail_w, 76.0);
+        let size = egui::vec2(avail_w, 60.0);
         let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
         let painter = ui.painter_at(rect);
         let center = rect.center();
-        // Cap the radius so labels at (r + 10) still fit inside the rect on
-        // all four sides regardless of how wide the sidebar is.
-        let r = ((size.y - 20.0) * 0.5).min((size.x - 24.0) * 0.5).max(8.0);
-        let label_r = r + 10.0;
+        // Pick the dial radius so labels (placed at r + 8) plus a 12 px font
+        // glyph stay strictly inside the rect on the limiting axis.
+        let max_label_r = (size.y * 0.5 - 6.0).min(size.x * 0.5 - 6.0).max(10.0);
+        let label_r = max_label_r;
+        let r = (label_r - 8.0).max(8.0);
         let stroke = egui::Stroke::new(1.0, theme::VGA_BRIGHT_CYAN);
-        let font = egui::FontId::new(12.0, egui::FontFamily::Monospace);
+        let font = egui::FontId::new(11.0, egui::FontFamily::Monospace);
 
         // Center circle is always there.
         painter.circle_stroke(center, 6.0, stroke);
@@ -296,15 +297,17 @@ fn compass_rosette(ui: &mut egui::Ui, state: &EditorState) {
             [egui::pos2(center.x, center.y - r), egui::pos2(center.x, center.y + r)],
             stroke,
         );
-        for (label, dx, dy) in [
-            ("N", 0.0, -label_r),
-            ("S", 0.0, label_r),
-            ("W", -label_r, 0.0),
-            ("E", label_r, 0.0),
+        // Anchor each cardinal toward the dial's center so glyphs stay inside
+        // the rect even when label_r is at the rect's edge.
+        for (label, offset, anchor) in [
+            ("N", egui::vec2(0.0, -label_r), egui::Align2::CENTER_TOP),
+            ("S", egui::vec2(0.0, label_r), egui::Align2::CENTER_BOTTOM),
+            ("W", egui::vec2(-label_r, 0.0), egui::Align2::LEFT_CENTER),
+            ("E", egui::vec2(label_r, 0.0), egui::Align2::RIGHT_CENTER),
         ] {
             painter.text(
-                center + egui::vec2(dx, dy),
-                egui::Align2::CENTER_CENTER,
+                center + offset,
+                anchor,
                 label,
                 font.clone(),
                 theme::VGA_BRIGHT_CYAN,
@@ -605,16 +608,97 @@ fn sector_panel(ui: &mut egui::Ui, state: &EditorState, bank: &mut TextureBank) 
             ui.colored_label(theme::VGA_DARK_GRAY, "(no sector)");
             return;
         };
-        ui.colored_label(theme::VGA_WHITE, format!("Sector {idx}"));
-        ui.colored_label(theme::VGA_WHITE, format!("ceiling: {}", s.ceiling_height));
-        ui.colored_label(theme::VGA_WHITE, format!("floor:   {}", s.floor_height));
-        ui.colored_label(theme::VGA_WHITE, format!("light:   {}", s.light_level));
-        ui.colored_label(theme::VGA_WHITE, format!("type:    {}", s.sector_type));
-        ui.colored_label(theme::VGA_WHITE, format!("tag:     {}", s.tag));
+        let header_color = if state.selection.is_empty() {
+            theme::VGA_BRIGHT_CYAN
+        } else {
+            theme::VGA_WHITE
+        };
+        ui.colored_label(header_color, format!("Sector {idx}"));
         ui.add_space(2.0);
-        texture_row(ui, state, bank, "C", &s.ceiling_texture, TexKind::Flat);
-        texture_row(ui, state, bank, "F", &s.floor_texture, TexKind::Flat);
+
+        // EdMap-style numbered/lettered shortcuts. The leading char in each row
+        // is also a hotkey (Sector mode + selection only) — see keybindings.rs.
+        sector_field_row(ui, "1", "ceiling", &format!("{:>4}", s.ceiling_height));
+        sector_texture_row(ui, state, bank, "2", &s.ceiling_texture);
+        sector_field_row(ui, "3", "floor",   &format!("{:>4}", s.floor_height));
+        sector_texture_row(ui, state, bank, "4", &s.floor_texture);
+        sector_field_row(ui, "5", "light",   &format!("{:>4}", s.light_level));
+        sector_field_row(ui, "6", "type",    &format!("{:>4}", s.sector_type));
+        sector_field_row(ui, "7", "tag",     &format!("{:>4}", s.tag));
+
+        // K row: middle wall texture used by sidedefs in this sector. Shows
+        // "(varies)" when sidedefs disagree so the user knows K will overwrite.
+        let wall_tex = sector_wall_texture(map, idx);
+        let display = wall_tex.clone().unwrap_or_else(|| "(varies)".to_string());
+        sector_texture_row(ui, state, bank, "K", &display);
     });
+}
+
+/// Render a numbered/lettered sector property row: `<key> <label> <value>` so
+/// pressing the key in Sector mode triggers the matching edit.
+fn sector_field_row(ui: &mut egui::Ui, key: &str, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.colored_label(theme::VGA_YELLOW, key);
+        ui.colored_label(theme::VGA_BRIGHT_CYAN, label);
+        ui.colored_label(theme::VGA_WHITE, value);
+    });
+}
+
+/// Texture row variant for sector panel — leading hotkey letter, then the
+/// texture name with the same hover-preview popup as linedef texture rows.
+fn sector_texture_row(
+    ui: &mut egui::Ui,
+    state: &EditorState,
+    bank: &mut TextureBank,
+    key: &str,
+    name: &str,
+) {
+    let kind = match key {
+        "K" => TexKind::Wall,
+        _ => TexKind::Flat,
+    };
+    let display = if name.is_empty() || name == "-" {
+        "-".to_string()
+    } else {
+        name.to_string()
+    };
+    let resp = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.colored_label(theme::VGA_YELLOW, key);
+            ui.add(
+                egui::Label::new(RichText::new(&display).color(theme::VGA_WHITE))
+                    .sense(egui::Sense::hover()),
+            )
+        })
+        .inner;
+
+    if resp.hovered() && display != "-" && display != "(varies)" {
+        if let Some(pos) = ui.ctx().pointer_hover_pos() {
+            paint_texture_popup(ui.ctx(), state, bank, pos, &display, kind);
+        }
+    }
+}
+
+/// Find the wall texture used by sector `sector_idx`. Returns the middle
+/// texture when every sidedef referencing the sector uses the same one;
+/// returns None when they differ (so the panel can show "(varies)").
+fn sector_wall_texture(map: &crate::wad::MapData, sector_idx: usize) -> Option<String> {
+    let want: u16 = sector_idx as u16;
+    let mut found: Option<&str> = None;
+    for sd in &map.sidedefs {
+        if sd.sector != want {
+            continue;
+        }
+        let tex = sd.middle_texture.as_str();
+        match found {
+            None => found = Some(tex),
+            Some(prev) if prev == tex => {}
+            Some(_) => return None, // disagreement
+        }
+    }
+    found.map(|s| s.to_string())
 }
 
 fn thing_panel(ui: &mut egui::Ui, state: &EditorState) {
