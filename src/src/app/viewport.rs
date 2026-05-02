@@ -404,9 +404,9 @@ fn draw_grid(painter: &egui::Painter, rect: egui::Rect, state: &EditorState) {
     }
 }
 
-/// Hover popup for a Thing — shows the matching DOOM sprite (if available in
-/// the loaded WAD) plus the type number. Mirrors the wall/flat preview from
-/// the sidebar so the look is consistent.
+/// Hover popup for a Thing — always renders so an unmapped type or a missing
+/// sprite gives the user a clear diagnostic ("type N — no sprite mapping" or
+/// "type N — TROOA1 not in WAD") instead of silent nothing.
 fn paint_thing_sprite_popup(
     ctx: &egui::Context,
     state: &EditorState,
@@ -414,27 +414,52 @@ fn paint_thing_sprite_popup(
     cursor: egui::Pos2,
     thing_type: u16,
 ) {
-    let Some(wad) = state.wad.as_ref() else { return };
     let candidates = super::things_table::sprite_candidates(thing_type);
     let mut chosen: Option<(&'static str, [usize; 2])> = None;
-    for &name in candidates {
-        if let Some(handle) = bank.sprite(ctx, wad, name) {
-            chosen = Some((name, handle.size()));
-            break;
+    if let Some(wad) = state.wad.as_ref() {
+        for &name in candidates {
+            if let Some(handle) = bank.sprite(ctx, wad, name) {
+                chosen = Some((name, handle.size()));
+                break;
+            }
         }
     }
-    let Some((name, [w, h])) = chosen else { return };
-    if w == 0 || h == 0 {
-        return;
-    }
 
-    // Re-fetch the handle now that the cache hit/miss is settled.
-    let handle = bank.sprite(ctx, wad, name).unwrap().clone();
+    let category = super::things_table::category_of(thing_type);
+    let category_label = format!("{:?}", category);
 
-    // Scale up so small monster sprites are legible — cap longest edge at 160 px.
-    let max_edge = 160.0_f32;
-    let scale = (max_edge / w as f32).min(max_edge / h as f32).max(1.0);
-    let img_size = egui::vec2(w as f32 * scale, h as f32 * scale);
+    let (img_size, label) = match chosen {
+        Some((name, [w, h])) if w > 0 && h > 0 => {
+            let max_edge = 160.0_f32;
+            let scale = (max_edge / w as f32).min(max_edge / h as f32).max(1.0);
+            (
+                egui::vec2(w as f32 * scale, h as f32 * scale),
+                format!("type {thing_type} ({category_label})  {name}  {w}x{h}"),
+            )
+        }
+        _ => {
+            // Diagnostic: explain why we couldn't show a sprite. Distinguishes
+            // "no mapping in our table" from "mapping exists but lump missing".
+            let reason = if candidates.is_empty() {
+                "no sprite mapping"
+            } else if state.wad.is_none() {
+                "no WAD loaded"
+            } else {
+                // Mapping exists but every candidate failed to load.
+                "sprite lump missing"
+            };
+            let mapped = if candidates.is_empty() {
+                "?".to_string()
+            } else {
+                candidates.join("/")
+            };
+            (
+                egui::vec2(48.0, 48.0),
+                format!("type {thing_type} ({category_label})  {mapped}  [{reason}]"),
+            )
+        }
+    };
+
     let pad = 4.0;
     let popup_size = egui::vec2(img_size.x + pad * 2.0, img_size.y + pad * 2.0 + 14.0);
     let mut origin = cursor + egui::vec2(16.0, 16.0);
@@ -445,6 +470,10 @@ fn paint_thing_sprite_popup(
     if origin.y + popup_size.y > screen.bottom() {
         origin.y = cursor.y - 16.0 - popup_size.y;
     }
+
+    let handle_to_paint = chosen.and_then(|(name, _)| {
+        state.wad.as_ref().and_then(|wad| bank.sprite(ctx, wad, name).cloned())
+    });
 
     egui::Area::new(egui::Id::new(("thing_preview", thing_type)))
         .order(egui::Order::Tooltip)
@@ -458,12 +487,25 @@ fn paint_thing_sprite_popup(
                 .show(ui, |ui| {
                     ui.set_min_size(egui::vec2(img_size.x, img_size.y + 14.0));
                     let img_rect = egui::Rect::from_min_size(ui.cursor().min, img_size);
-                    egui::Image::new(&handle).fit_to_exact_size(img_size).paint_at(ui, img_rect);
+                    if let Some(handle) = handle_to_paint {
+                        egui::Image::new(&handle).fit_to_exact_size(img_size).paint_at(ui, img_rect);
+                    } else {
+                        // Placeholder square with a centered "?".
+                        ui.painter().rect_stroke(
+                            img_rect,
+                            0.0,
+                            egui::Stroke::new(1.0, theme::VGA_DARK_GRAY),
+                        );
+                        ui.painter().text(
+                            img_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "?",
+                            egui::FontId::new(20.0, egui::FontFamily::Monospace),
+                            theme::VGA_DARK_GRAY,
+                        );
+                    }
                     ui.advance_cursor_after_rect(img_rect);
-                    ui.colored_label(
-                        theme::VGA_WHITE,
-                        format!("type {thing_type}  {name}  {w}x{h}"),
-                    );
+                    ui.colored_label(theme::VGA_WHITE, label);
                 });
         });
 }

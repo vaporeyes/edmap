@@ -166,19 +166,75 @@ pub fn sprite_candidates(thing_type: u16) -> &'static [&'static str] {
         // Common obstacles / decoration
         2035 => &["BAR1A0"], // Exploding barrel
         70   => &["FCANA0"], // Burning barrel
-        43   => &["TRE1A0"],
-        54   => &["TRE2A0"],
+        // Columns
+        30   => &["COL1A0"], // Tall green column
+        31   => &["COL2A0"], // Short green column
+        32   => &["COL3A0"], // Tall red column
+        33   => &["COL4A0"], // Short red column
+        36   => &["COL5A0"], // Short green column w/skull
+        37   => &["COL6A0"], // Short red column w/skull
+        // Lamps
         2028 => &["COLUA0"], // Floor lamp
+        85   => &["TLMPA0"], // Tall tech lamp
+        86   => &["TLP2A0"], // Short tech lamp
+        // Candles / candelabra
         34   => &["CANDA0"],
-        35   => &["CBRAA0"], // Candelabra
-        44   => &["TBLUA0"],
-        45   => &["TGRNA0"],
-        46   => &["TREDA0"],
-        55   => &["SMBTA0"],
-        56   => &["SMGTA0"],
-        57   => &["SMRTA0"],
+        35   => &["CBRAA0"],
+        // Trees
+        43   => &["TRE1A0"], // Burnt tree
+        54   => &["TRE2A0"], // Large brown tree
+        // Torches
+        44   => &["TBLUA0"], // Tall blue
+        45   => &["TGRNA0"], // Tall green
+        46   => &["TREDA0"], // Tall red
+        55   => &["SMBTA0"], // Short blue
+        56   => &["SMGTA0"], // Short green
+        57   => &["SMRTA0"], // Short red
+        // Stalagmite / tech column
         47   => &["SMITA0"],
         48   => &["ELECA0"],
+        // Gore / impaled (DOOM 1 + 2)
+        25   => &["POL1A0"], // Impaled human
+        26   => &["POL6A0"], // Twitching impaled human
+        27   => &["POL4A0"], // Skull on pole
+        28   => &["POL2A0"], // Five skulls "shish kebab"
+        29   => &["POL3A0"], // Pile of skulls and candles
+        // DOOM 1 exclusive decorations
+        41   => &["CEYEA0"], // Evil eye
+        42   => &["FSKUA0"], // Floating skull rock
+        // Hanging bodies (DOOM 1)
+        49   => &["GOR1A0"], // Hanging victim, twitching
+        50   => &["GOR2A0"],
+        51   => &["GOR3A0"],
+        52   => &["GOR4A0"],
+        53   => &["GOR5A0"],
+        59   => &["GOR2A0"],
+        60   => &["GOR4A0"],
+        61   => &["GOR3A0"],
+        62   => &["GOR5A0"],
+        63   => &["GOR1A0"],
+        // Hanging torsos (DOOM 2)
+        73   => &["HDB1A0"],
+        74   => &["HDB2A0"],
+        75   => &["HDB3A0"],
+        76   => &["HDB4A0"],
+        77   => &["HDB5A0"],
+        78   => &["HDB6A0"],
+        // Pools of blood / brain
+        79   => &["POB1A0"],
+        80   => &["POB2A0"],
+        81   => &["BRS1A0"],
+        // Dead bodies (corpse decorations)
+        10   => &["PLAYW0"],
+        12   => &["PLAYW0"],
+        15   => &["PLAYN0"],
+        18   => &["POSSL0"],
+        19   => &["SPOSL0"],
+        20   => &["TROOM0"],
+        21   => &["SARGN0"],
+        22   => &["HEADL0"],
+        23   => &["SKULK0"],
+        24   => &["POL5A0"], // Pool of blood
         _ => &[],
     }
 }
