@@ -15,12 +15,18 @@ enum TexKind {
     Flat,
 }
 
-pub fn draw(ui: &mut egui::Ui, state: &mut EditorState, bank: &mut TextureBank) {
+pub fn draw(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    bank: &mut TextureBank,
+    mem_free_kb: u64,
+    mem_total_kb: u64,
+) {
     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
     menu_list(ui, state);
     separator(ui);
-    info_box(ui, state);
+    info_box(ui, state, mem_free_kb, mem_total_kb);
     separator(ui);
     status_block(ui, state);
     separator(ui);
@@ -92,7 +98,7 @@ fn menu_list(ui: &mut egui::Ui, state: &mut EditorState) {
     }
 }
 
-fn info_box(ui: &mut egui::Ui, state: &EditorState) {
+fn info_box(ui: &mut egui::Ui, state: &EditorState, mem_free_kb: u64, mem_total_kb: u64) {
     let frame = egui::Frame::none()
         .fill(theme::INFO_BOX_BG)
         .inner_margin(egui::Margin::symmetric(4.0, 2.0));
@@ -103,16 +109,35 @@ fn info_box(ui: &mut egui::Ui, state: &EditorState) {
         ui.label(RichText::new(map_name).color(theme::VGA_YELLOW).strong());
         let origin = if state.wad_path.is_some() { "from PWAD" } else { "original map" };
         ui.label(RichText::new(origin).color(theme::VGA_WHITE).size(11.0));
-        ui.label(RichText::new(format!("{:.2}k free", free_memory_estimate(state))).color(theme::VGA_BRIGHT_GREEN).size(11.0));
+
+        // Real memory line: "<free system RAM> free" plus the in-memory map
+        // size on a second line. Hover-tooltip shows total/used breakdown.
+        let free_label = format!("{} free", super::mem_probe::fmt_kb(mem_free_kb));
+        let free_resp = ui.label(
+            RichText::new(free_label).color(theme::VGA_BRIGHT_GREEN).size(11.0),
+        );
+        let used_kb = mem_total_kb.saturating_sub(mem_free_kb);
+        free_resp.on_hover_text(format!(
+            "System RAM\nfree:  {}\nused:  {}\ntotal: {}",
+            super::mem_probe::fmt_kb(mem_free_kb),
+            super::mem_probe::fmt_kb(used_kb),
+            super::mem_probe::fmt_kb(mem_total_kb),
+        ));
+
+        if let Some(map) = state.map.as_ref() {
+            let bytes = super::mem_probe::map_data_bytes(map);
+            let kb = bytes as f64 / 1024.0;
+            ui.label(
+                RichText::new(format!("{kb:.2}k map"))
+                    .color(theme::VGA_BRIGHT_CYAN)
+                    .size(11.0),
+            )
+            .on_hover_text(format!("Map data in memory: {bytes} bytes\n(record sizes only — no headers)"));
+        }
         ui.add_space(2.0);
         ui.label(RichText::new("press F1").color(theme::VGA_WHITE).size(11.0));
         ui.label(RichText::new("for help").color(theme::VGA_WHITE).size(11.0));
     });
-}
-
-fn free_memory_estimate(_state: &EditorState) -> f32 {
-    // Cosmetic — modern systems have GB free. Show a believable VGA-era number.
-    187.82
 }
 
 fn status_block(ui: &mut egui::Ui, state: &EditorState) {

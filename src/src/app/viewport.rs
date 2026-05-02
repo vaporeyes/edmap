@@ -26,7 +26,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
     handle_input(ui, &response, state, hover);
 
     let painter = ui.painter_at(available);
-    painter.rect_filled(available, 0.0, theme::VIEWPORT_BG);
+    let bg = state.theme_overrides.viewport_bg.unwrap_or(theme::VIEWPORT_BG);
+    painter.rect_filled(available, 0.0, bg);
 
     let to_screen = |world: Pos2| world_to_screen(state, available, world);
 
@@ -128,6 +129,24 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
             theme::VGA_DARK_GRAY,
         );
     }
+
+    // Line-draw mode: rubber-band from last placed vertex to cursor.
+    if let (Some(map), Some(line_draw)) = (state.map.as_ref(), state.line_draw.as_ref()) {
+        if let Some(&last) = line_draw.chain.last() {
+            if let Some(v) = map.vertices.get(last as usize) {
+                let from = to_screen(egui::pos2(v.x as f32, v.y as f32));
+                let to_pos = to_screen(state.cursor_world);
+                painter.line_segment([from, to_pos], Stroke::new(1.0, theme::VGA_YELLOW));
+            }
+        }
+        // Highlight the chain start so user knows where to click to close.
+        if let Some(&first) = line_draw.chain.first() {
+            if let Some(v) = map.vertices.get(first as usize) {
+                let p = to_screen(egui::pos2(v.x as f32, v.y as f32));
+                painter.circle_stroke(p, 6.0, Stroke::new(1.0, theme::VGA_BRIGHT_GREEN));
+            }
+        }
+    }
 }
 
 /// What the cursor is currently hovering over for the active mode.
@@ -217,6 +236,8 @@ fn handle_input(
                     state.selection.push(idx);
                 }
             }
+            // One snapshot per drag (not per mutation frame).
+            commands::push_undo(state);
         }
         if !state.selection.is_empty() {
             let scrn_delta = response.drag_delta();
@@ -239,6 +260,20 @@ fn handle_input(
     if scroll != 0.0 && response.hovered() {
         let factor = if scroll > 0.0 { 1.1 } else { 1.0 / 1.1 };
         state.view_zoom = (state.view_zoom * factor).clamp(0.01, 16.0);
+    }
+    // Line-draw mode: right-click places vertex, left-click closes (or also
+    // places when not near the start). Bypasses normal selection clicks.
+    if state.line_draw.is_some() {
+        if response.clicked_by(egui::PointerButton::Secondary) {
+            commands::line_draw_place_vertex(state);
+            return;
+        }
+        if response.clicked() {
+            if !commands::line_draw_try_close(state) {
+                commands::line_draw_place_vertex(state);
+            }
+            return;
+        }
     }
     // Click-to-select. Shift extends the selection; plain click replaces it.
     if response.clicked() {
@@ -325,6 +360,19 @@ fn draw_grid(painter: &egui::Painter, rect: egui::Rect, state: &EditorState) {
     let start_x = (min_x / step).floor() * step;
     let start_y = (min_y / step).floor() * step;
 
+    // Resolve color: user override beats the intensity setting.
+    let color = state
+        .theme_overrides
+        .grid_dot
+        .unwrap_or_else(|| state.grid_intensity.color());
+    // Brighter intensities also get a slightly larger dot — easier to spot.
+    let dot_size = match state.grid_intensity {
+        super::state::GridIntensity::Dim => 1.0,
+        super::state::GridIntensity::Normal => 1.5,
+        super::state::GridIntensity::Bright => 2.0,
+    };
+    let dot_dim = egui::vec2(dot_size, dot_size);
+
     let mut x = start_x;
     while x <= max_x {
         let mut y = start_y;
@@ -332,9 +380,9 @@ fn draw_grid(painter: &egui::Painter, rect: egui::Rect, state: &EditorState) {
             let sx = center.x + (x - state.view_center.x) * state.view_zoom;
             let sy = center.y - (y - state.view_center.y) * state.view_zoom;
             painter.rect_filled(
-                egui::Rect::from_center_size(egui::pos2(sx, sy), egui::vec2(1.0, 1.0)),
+                egui::Rect::from_center_size(egui::pos2(sx, sy), dot_dim),
                 0.0,
-                theme::GRID_DOT,
+                color,
             );
             y += step;
         }

@@ -188,16 +188,25 @@ fn is_map_lump(name: &str) -> bool {
 }
 
 /// Convenience: build PWAD bytes (preserving src lumps if provided) and write to disk.
+/// Also writes a `.bak` copy of the existing file (if any) before overwriting,
+/// matching Doom Builder's default safety behavior.
 pub fn save_map_to_path(
     path: impl AsRef<Path>,
     src: Option<&Wad>,
     map: &MapData,
 ) -> Result<(), WadError> {
+    let path_ref = path.as_ref();
+    // Best-effort backup: if the target already exists, try to copy it to .bak.
+    // Failures are non-fatal — a save shouldn't fail because backup couldn't write.
+    if path_ref.exists() {
+        let bak = path_ref.with_extension("wad.bak");
+        let _ = std::fs::copy(path_ref, &bak);
+    }
     let bytes = match src {
         Some(s) => pwad_preserving_others(s, map),
         None => pwad_with_one_map(map),
     };
-    std::fs::write(path, bytes)?;
+    std::fs::write(path_ref, bytes)?;
     Ok(())
 }
 

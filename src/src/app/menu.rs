@@ -112,7 +112,7 @@ pub fn items_for(menu: &str) -> &'static [(&'static str, &'static str)] {
         "Info" => &[
             ("About EdMap", ""),
             ("Help", "F1"),
-            ("Calculator", "Num Lock"),
+            ("Calculator", "Ctrl-K"),
             ("Map Information", ""),
             ("System Information", ""),
             ("Load config file", ""),
@@ -128,6 +128,7 @@ pub fn items_for(menu: &str) -> &'static [(&'static str, &'static str)] {
             ("Build & save map", "F9"),
             ("Alternate build", "Alt-F9"),
             ("Play map", "Ctrl-F9"),
+            ("Test map settings", ""),
             ("Quit to DOS", "Alt-X"),
         ],
         "WAD list" => &[
@@ -136,12 +137,21 @@ pub fn items_for(menu: &str) -> &'static [(&'static str, &'static str)] {
             ("Add PWAD file", "Ctrl-F4"),
             ("Remove PWAD", ""),
             ("Write ADD file", ""),
+            ("Save selection as prefab", ""),
+            ("Load prefab", ""),
         ],
         "Edit" => &[
             ("Add/split", "Ins"),
             ("Delete/merge", "BkSp"),
+            ("Line-draw mode", ""),
             ("Undo from last save", ""),
             ("Shift object", ""),
+            ("Copy", "Ctrl-C"),
+            ("Paste", "Ctrl-V"),
+            ("Flip selection horizontal", ""),
+            ("Flip selection vertical", ""),
+            ("Rotate selection", ""),
+            ("Scale selection", ""),
             ("Find objects", "Ctrl-F"),
             ("Goto object", "Ctrl-G"),
             ("Next object", ">"),
@@ -153,10 +163,18 @@ pub fn items_for(menu: &str) -> &'static [(&'static str, &'static str)] {
             ("Expand/reduce map", ""),
             ("Light adjustment", ""),
             ("Texture replace", ""),
+            ("Fix zero-length linedefs", ""),
+            ("Fix missing textures", ""),
+            ("Remove unused textures", ""),
         ],
         "Sectors" => &[
             ("Polygon", "Ctrl-P"),
             ("Curve LineDef", ""),
+            ("Join sectors", ""),
+            ("Merge sectors", ""),
+            ("Gradient floors", ""),
+            ("Gradient ceilings", ""),
+            ("Gradient brightness", ""),
             ("Rotate", "R"),
             ("Size", "Z"),
             ("Texture style", "Alt-F8"),
@@ -175,7 +193,8 @@ pub fn items_for(menu: &str) -> &'static [(&'static str, &'static str)] {
             ("Enhance map", "Ctrl-E"),
             ("Full screen", "Ctrl-S"),
             ("Snap/grid", ""),
-            ("Grid on/off", ""),
+            ("Grid on/off", "G"),
+            ("Grid intensity", ""),
             ("Origin on/off", "Ctrl-O"),
             ("Center map", ""),
             ("Viewer", "F10"),
@@ -202,6 +221,8 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
     use super::state::Dialog;
     match (menu, item) {
         ("Info", "About EdMap") => state.dialog = Some(Dialog::About),
+        ("Info", "Calculator") => super::calculator::toggle(state),
+        ("Info", "Preferences") => state.dialog = Some(Dialog::Preferences),
         ("Info", "Map Information") => state.dialog = Some(Dialog::MapInformation),
         ("Info", "System Information") => state.dialog = Some(Dialog::SystemInformation),
         ("File (map)", "New map") => {
@@ -222,6 +243,8 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
             }
         }
         ("File (map)", "Save map data") => super::commands::save_map(state),
+        ("File (map)", "Play map") => super::commands::test_map(state),
+        ("File (map)", "Test map settings") => super::commands::open_test_map_settings(state),
         ("File (map)", "Quit to DOS") => {
             if super::commands::dirty_guard(state, super::state::PendingAction::Quit) {
                 std::process::exit(0);
@@ -229,6 +252,8 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
         }
         ("WAD list", "Save as PWAD...") => super::commands::save_map_as(state),
         ("WAD list", "List WADs") => state.dialog = Some(Dialog::WadList),
+        ("WAD list", "Save selection as prefab") => super::commands::save_selection_as_prefab(state),
+        ("WAD list", "Load prefab") => super::commands::load_prefab_at_cursor(state),
         ("WAD list", "Add PWAD file") => {
             if super::commands::dirty_guard(state, super::state::PendingAction::OpenWad) {
                 open_wad_picker(state);
@@ -238,6 +263,14 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
         ("Edit", "Previous object") => super::commands::cycle_selection(state, -1),
         ("Edit", "Goto object") => {
             state.dialog = Some(Dialog::GotoObject { input: String::new() });
+        }
+        ("Edit", "Find objects") => {
+            state.dialog = Some(Dialog::FindReplace {
+                kind: super::state::FindKind::LineDefTexture,
+                find: String::new(),
+                replace: String::new(),
+                replace_mode: false,
+            });
         }
         ("Map utilities", "Shift Map (X/Y/Z)") => {
             state.dialog = Some(Dialog::ShiftMap {
@@ -253,11 +286,35 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
                 sz: "1.0".into(),
             });
         }
+        ("Map utilities", "Fix zero-length linedefs") => {
+            super::commands::fix_zero_length_linedefs(state);
+        }
+        ("Map utilities", "Fix missing textures") => {
+            super::commands::fix_missing_textures(state);
+        }
+        ("Map utilities", "Remove unused textures") => {
+            super::commands::remove_unused_textures(state);
+        }
         ("Map utilities", "Light adjustment") => {
             state.dialog = Some(Dialog::LightAdjust {
                 a: "100".into(),
                 b: "0".into(),
             });
+        }
+        ("Sectors", "Join sectors") => {
+            super::commands::join_sectors(state);
+        }
+        ("Sectors", "Merge sectors") => {
+            super::commands::merge_sectors(state);
+        }
+        ("Sectors", "Gradient floors") => {
+            super::commands::gradient_sector_field(state, super::commands::GradientField::Floor);
+        }
+        ("Sectors", "Gradient ceilings") => {
+            super::commands::gradient_sector_field(state, super::commands::GradientField::Ceiling);
+        }
+        ("Sectors", "Gradient brightness") => {
+            super::commands::gradient_sector_field(state, super::commands::GradientField::Brightness);
         }
         ("Sectors", "Curve LineDef") => {
             state.dialog = Some(Dialog::CurveLineDef {
@@ -306,10 +363,35 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
                 side_texture: "STEP1".into(),
             });
         }
+        ("Edit", "Copy") => super::commands::copy_selection(state),
+        ("Edit", "Paste") => super::commands::paste_clipboard(state),
+        ("Edit", "Flip selection horizontal") => super::commands::flip_selection_axis(state, true),
+        ("Edit", "Flip selection vertical") => super::commands::flip_selection_axis(state, false),
+        ("Edit", "Rotate selection") => {
+            state.dialog = Some(Dialog::RotateSelection { degrees: "90".into() });
+        }
+        ("Edit", "Scale selection") => {
+            state.dialog = Some(Dialog::ScaleSelection { percent: "100".into() });
+        }
         ("Edit", "Add/split") => super::commands::add_at_cursor(state),
+        ("Edit", "Line-draw mode") => super::commands::toggle_line_draw(state),
         ("Edit", "Delete/merge") => super::commands::delete_selected(state),
         ("Edit", "Undo from last save") => super::commands::undo_to_baseline(state),
-        ("Display", "Grid on/off") => state.grid_visible = !state.grid_visible,
+        ("Display", "Grid on/off") => {
+            state.grid_visible = !state.grid_visible;
+            state.status_message = Some(format!(
+                "Grid: {}",
+                if state.grid_visible { "on" } else { "off" }
+            ));
+        }
+        ("Display", "Grid intensity") => {
+            state.grid_intensity = state.grid_intensity.cycle();
+            state.grid_visible = true;
+            state.status_message = Some(format!(
+                "Grid intensity: {}",
+                state.grid_intensity.label()
+            ));
+        }
         ("Display", "Origin on/off") => state.origin_visible = !state.origin_visible,
         ("Display", "Center map") => super::commands::center_map(state),
         ("Display", "Refresh display") => state.status_message = None,

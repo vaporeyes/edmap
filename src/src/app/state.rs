@@ -33,6 +33,15 @@ pub enum Dialog {
     /// Categorized picker for thing-types or linedef-actions. Routes the
     /// chosen code back to whichever Edit dialog is stashed in dialog_pending.
     Picker { kind: PickerKind, expanded: usize },
+    RotateSelection { degrees: String },
+    ScaleSelection { percent: String },
+    FindReplace {
+        kind: FindKind,
+        find: String,
+        replace: String,
+        replace_mode: bool,
+    },
+    Preferences,
     Polygon { sides: String, radius: String },
     Door { key: DoorKey, fast: bool },
     CurveLineDef { vertices_per_line: String, curve_distance: String, delta_angle: String },
@@ -78,6 +87,40 @@ pub enum Dialog {
         top_texture: String,
         side_texture: String,
     },
+    /// Configure the external source-port used by Test Map (Ctrl-F9).
+    TestMapSettings { exe: String, args: String },
+}
+
+/// Visual intensity for the map grid dots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridIntensity {
+    Dim,
+    Normal,
+    Bright,
+}
+
+impl GridIntensity {
+    pub fn cycle(self) -> Self {
+        match self {
+            GridIntensity::Dim => GridIntensity::Normal,
+            GridIntensity::Normal => GridIntensity::Bright,
+            GridIntensity::Bright => GridIntensity::Dim,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            GridIntensity::Dim => "dim",
+            GridIntensity::Normal => "normal",
+            GridIntensity::Bright => "bright",
+        }
+    }
+    pub fn color(self) -> egui::Color32 {
+        match self {
+            GridIntensity::Dim => crate::theme::GRID_DOT_DIM,
+            GridIntensity::Normal => crate::theme::GRID_DOT,
+            GridIntensity::Bright => crate::theme::GRID_DOT_BRIGHT,
+        }
+    }
 }
 
 /// Which categorized picker is active.
@@ -85,6 +128,96 @@ pub enum Dialog {
 pub enum PickerKind {
     ThingType,
     LineDefAction,
+}
+
+/// Search categories for Find / Find & Replace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindKind {
+    LineDefTexture,
+    SectorFloorTexture,
+    SectorCeilingTexture,
+    LineDefAction,
+    SectorTag,
+    ThingType,
+    LineDefIndex,
+    SectorIndex,
+    ThingIndex,
+    VertexIndex,
+}
+
+impl FindKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            FindKind::LineDefTexture => "LineDef texture",
+            FindKind::SectorFloorTexture => "Sector floor texture",
+            FindKind::SectorCeilingTexture => "Sector ceiling texture",
+            FindKind::LineDefAction => "LineDef action #",
+            FindKind::SectorTag => "Sector tag #",
+            FindKind::ThingType => "Thing type #",
+            FindKind::LineDefIndex => "LineDef index",
+            FindKind::SectorIndex => "Sector index",
+            FindKind::ThingIndex => "Thing index",
+            FindKind::VertexIndex => "Vertex index",
+        }
+    }
+
+    pub fn all() -> &'static [FindKind] {
+        &[
+            FindKind::LineDefTexture,
+            FindKind::SectorFloorTexture,
+            FindKind::SectorCeilingTexture,
+            FindKind::LineDefAction,
+            FindKind::SectorTag,
+            FindKind::ThingType,
+            FindKind::LineDefIndex,
+            FindKind::SectorIndex,
+            FindKind::ThingIndex,
+            FindKind::VertexIndex,
+        ]
+    }
+
+    pub fn supports_replace(self) -> bool {
+        matches!(
+            self,
+            FindKind::LineDefTexture
+                | FindKind::SectorFloorTexture
+                | FindKind::SectorCeilingTexture
+                | FindKind::LineDefAction
+                | FindKind::SectorTag
+                | FindKind::ThingType
+        )
+    }
+}
+
+/// In-memory clipboard for Copy/Paste. Mode-specific: holds cloned objects
+/// with positions stored relative to the copy-time centroid so paste lands
+/// at the cursor with the same internal layout.
+#[derive(Debug, Clone)]
+pub enum Clipboard {
+    Vertices(Vec<crate::wad::Vertex>),
+    Things(Vec<crate::wad::Thing>),
+}
+
+/// Line-Draw Mode active state. Stores the chain of placed vertex indices
+/// in placement order; the first index is also the "close on this vertex
+/// to complete a sector" anchor.
+#[derive(Debug, Clone)]
+pub struct LineDrawState {
+    pub chain: Vec<u16>,
+}
+
+/// User overrides for the theme colors. Each None falls back to the static
+/// constant in `crate::theme`.
+#[derive(Debug, Clone, Default)]
+pub struct ThemeOverrides {
+    pub viewport_bg: Option<egui::Color32>,
+    pub linedef_normal: Option<egui::Color32>,
+    pub linedef_two_sided: Option<egui::Color32>,
+    pub linedef_selected: Option<egui::Color32>,
+    pub vertex_dot: Option<egui::Color32>,
+    pub vertex_hover: Option<egui::Color32>,
+    pub thing_mark: Option<egui::Color32>,
+    pub grid_dot: Option<egui::Color32>,
 }
 
 /// Door key requirement for Door auto-construction.
@@ -200,6 +333,7 @@ pub struct EditorState {
     pub grid_size: i32,
     pub snap_size: i32,
     pub grid_visible: bool,
+    pub grid_intensity: GridIntensity,
     pub origin_visible: bool,
     pub cursor_world: egui::Pos2,
     pub open_menu: Option<&'static str>,
@@ -216,6 +350,17 @@ pub struct EditorState {
     pub thing_filter: [bool; 11],
     /// When true, viewport renders each Thing's actual DOOM radius as a square.
     pub things_bbox_visible: bool,
+    /// Internal clipboard for Ctrl-C / Ctrl-V. Stores cloned objects with
+    /// world coordinates relative to the bounding-box centroid at copy time.
+    pub clipboard: Option<Clipboard>,
+    /// Line-Draw Mode state: when active, right-click places a vertex (snapped),
+    /// left-click anchors a linedef from the previous vertex. Closing on the
+    /// initial vertex completes a sector. Esc cancels.
+    pub line_draw: Option<LineDrawState>,
+    /// Live color overrides for the editor's theme. None = use theme default.
+    pub theme_overrides: ThemeOverrides,
+    pub calculator_open: bool,
+    pub calculator: Option<super::calculator::CalculatorState>,
     /// When `Some`, a click in the viewer grid writes a texture name to
     /// `dialog_pending` and closes the viewer instead of just recording it.
     pub viewer_pick: Option<PickTarget>,
@@ -231,8 +376,13 @@ pub struct EditorState {
     /// Snapshot of the map after the last load or save. Restored by
     /// Edit > Undo from last save. Cleared when no map is loaded.
     pub undo_baseline: Option<crate::wad::MapData>,
+    /// Multi-level undo stack — snapshots pushed before each mutation.
+    /// Capped at UNDO_DEPTH; oldest entries dropped when full.
+    pub undo_stack: Vec<crate::wad::MapData>,
     /// Last set of check results (for Ctrl-L "reopen Error List").
     pub last_check_results: Vec<super::checks::CheckResult>,
+    /// Persistent user preferences (test-map exe/args). Loaded at app start.
+    pub config: super::config::EdMapConfig,
 }
 
 impl Default for EditorState {
@@ -248,6 +398,7 @@ impl Default for EditorState {
             grid_size: 64,
             snap_size: 8,
             grid_visible: true,
+            grid_intensity: GridIntensity::Normal,
             origin_visible: true,
             cursor_world: egui::pos2(0.0, 0.0),
             open_menu: None,
@@ -260,11 +411,18 @@ impl Default for EditorState {
             dialog_pending: None,
             thing_filter: [true; 11],
             things_bbox_visible: false,
+            clipboard: None,
+            line_draw: None,
+            theme_overrides: ThemeOverrides::default(),
+            calculator_open: false,
+            calculator: None,
             is_dirty: false,
             drag_residual: egui::Vec2::ZERO,
             drag_active: false,
             undo_baseline: None,
+            undo_stack: Vec::new(),
             last_check_results: Vec::new(),
+            config: super::config::EdMapConfig::default(),
         }
     }
 }

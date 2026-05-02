@@ -174,6 +174,7 @@ pub fn delete_selected(state: &mut EditorState) {
     if state.selection.is_empty() {
         return;
     }
+    push_undo(state);
     let Some(map) = state.map.as_mut() else { return };
 
     match state.mode {
@@ -447,6 +448,8 @@ fn snap_world(value: f32, snap: i32) -> i16 {
 /// Edit > Add/split (Ins) — insert a new primitive of the current mode at
 /// the cursor (or split the selected one in LineDef mode).
 pub fn add_at_cursor(state: &mut EditorState) {
+    if state.map.is_none() { return; }
+    push_undo(state);
     let Some(map) = state.map.as_mut() else { return };
     let cx = state.cursor_world.x;
     let cy = state.cursor_world.y;
@@ -1034,6 +1037,7 @@ mod tests {
 /// Build a regular N-gon sector centered on the cursor with the given radius.
 /// Vertices wound counter-clockwise so DOOM front sidedefs face inward.
 pub fn create_polygon(state: &mut EditorState, sides: usize, radius: f32) {
+    push_undo(state);
     let Some(map) = state.map.as_mut() else { return };
     let sides = sides.clamp(3, 64);
     let radius = radius.clamp(8.0, 4096.0);
@@ -1109,6 +1113,7 @@ pub fn create_stairs(
     top_texture: &str,
     side_texture: &str,
 ) {
+    push_undo(state);
     let Some(map) = state.map.as_mut() else { return };
     let steps = steps.clamp(2, 64);
     let rise = rise.clamp(1, 1024);
@@ -1229,6 +1234,7 @@ pub fn create_door(state: &mut EditorState, key: super::state::DoorKey, fast: bo
         });
         return 0;
     }
+    push_undo(state);
     let target_sector = state.selection[0] as u16;
 
     let Some(map) = state.map.as_mut() else { return 0 };
@@ -1335,10 +1341,11 @@ pub fn open_properties(state: &mut EditorState) {
 /// positions are translated by (dx, dy); every sector's floor and ceiling
 /// height add dz. Things and texture offsets are NOT moved (matches EdMap).
 pub fn shift_map(state: &mut EditorState, dx: i32, dy: i32, dz: i32) {
-    let Some(map) = state.map.as_mut() else { return };
     if dx == 0 && dy == 0 && dz == 0 {
         return;
     }
+    push_undo(state);
+    let Some(map) = state.map.as_mut() else { return };
     for v in map.vertices.iter_mut() {
         v.x = (v.x as i32 + dx).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         v.y = (v.y as i32 + dy).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
@@ -1367,6 +1374,7 @@ pub fn expand_map(state: &mut EditorState, sx: f32, sy: f32, sz: f32) -> bool {
         });
         return false;
     }
+    push_undo(state);
     let Some(map) = state.map.as_mut() else { return false };
     if map.vertices.is_empty() {
         return false;
@@ -1410,6 +1418,7 @@ pub fn expand_map(state: &mut EditorState, sx: f32, sy: f32, sz: f32) -> bool {
 /// Apply `new_light = old_light * a/100 + b` per-sector, clamped to 0..255.
 /// Matches the EdMap "Light adjustment" formula exactly.
 pub fn light_adjust(state: &mut EditorState, a: i32, b: i32) {
+    push_undo(state);
     let Some(map) = state.map.as_mut() else { return };
     for s in map.sectors.iter_mut() {
         let v = (s.light_level as i32 * a) / 100 + b;
@@ -1467,6 +1476,7 @@ pub fn create_lift(state: &mut EditorState, repeatable: bool, fast: bool) -> usi
         });
         return 0;
     }
+    push_undo(state);
     let target = state.selection[0] as u16;
     let Some(map) = state.map.as_mut() else { return 0 };
     if (target as usize) >= map.sectors.len() {
@@ -1527,6 +1537,7 @@ pub fn create_teleporter(state: &mut EditorState) -> bool {
         });
         return false;
     }
+    push_undo(state);
     let a = state.selection[0] as u16;
     let b = state.selection[1] as u16;
     if a == b {
@@ -1624,9 +1635,10 @@ fn sector_or_linedef_uses_tag(map: &crate::wad::MapData, tag: u16) -> bool {
 /// Flip every selected LineDef: swap front/back sidedefs and start/end vertices
 /// so the front side faces the opposite direction.
 pub fn flip_selected_linedefs(state: &mut EditorState) -> usize {
-    if state.mode != SelectionMode::LineDef {
+    if state.mode != SelectionMode::LineDef || state.selection.is_empty() {
         return 0;
     }
+    push_undo(state);
     let Some(map) = state.map.as_mut() else { return 0 };
     let mut count = 0;
     for &i in &state.selection {
@@ -1645,9 +1657,10 @@ pub fn flip_selected_linedefs(state: &mut EditorState) -> usize {
 /// Adjust ceiling height (Shift inverts to floor) on every selected sector.
 /// dz is the signed delta in DOOM units.
 pub fn adjust_selected_heights(state: &mut EditorState, dz: i32, target_floor: bool) -> usize {
-    if state.mode != SelectionMode::Sector {
+    if state.mode != SelectionMode::Sector || state.selection.is_empty() {
         return 0;
     }
+    push_undo(state);
     let Some(map) = state.map.as_mut() else { return 0 };
     let mut count = 0;
     for &i in &state.selection {
@@ -1674,9 +1687,10 @@ pub fn adjust_selected_heights(state: &mut EditorState, dz: i32, target_floor: b
 
 /// Adjust light_level on every selected sector by `db` (clamped 0..255).
 pub fn adjust_selected_light(state: &mut EditorState, db: i32) -> usize {
-    if state.mode != SelectionMode::Sector {
+    if state.mode != SelectionMode::Sector || state.selection.is_empty() {
         return 0;
     }
+    push_undo(state);
     let Some(map) = state.map.as_mut() else { return 0 };
     let mut count = 0;
     for &i in &state.selection {
@@ -1715,6 +1729,7 @@ pub fn curve_linedef(state: &mut EditorState, n: usize, curve_distance: f32) {
         });
         return;
     }
+    push_undo(state);
     let n = n.clamp(2, 32);
     let ld_idx = state.selection[0];
     let Some(map) = state.map.as_mut() else { return };
@@ -1822,6 +1837,7 @@ pub fn auto_align_textures(state: &mut EditorState) -> usize {
         });
         return 0;
     }
+    push_undo(state);
     let start_ld_idx = state.selection[0];
     let Some(map) = state.map.as_mut() else { return 0 };
     let Some(start_ld) = map.linedefs.get(start_ld_idx).copied() else { return 0 };
@@ -1880,4 +1896,1224 @@ pub fn auto_align_textures(state: &mut EditorState) -> usize {
     state.is_dirty = true;
     state.status_message = Some(format!("Aligned {count} sidedef(s) of {target_tex}"));
     count
+}
+
+// ---------------- Cleanup commands ----------------
+
+/// Sweep the map and delete every linedef whose start and end vertices
+/// coincide. Returns the count removed.
+pub fn fix_zero_length_linedefs(state: &mut EditorState) -> usize {
+    push_undo(state);
+    let Some(map) = state.map.as_mut() else { return 0 };
+    let mut removed = 0;
+    let mut i = 0;
+    while i < map.linedefs.len() {
+        let ld = &map.linedefs[i];
+        let zero_len = match (
+            map.vertices.get(ld.start_vertex as usize),
+            map.vertices.get(ld.end_vertex as usize),
+        ) {
+            (Some(a), Some(b)) => a.x == b.x && a.y == b.y,
+            _ => true, // missing vertex → also invalid
+        };
+        if zero_len {
+            map.linedefs.remove(i);
+            removed += 1;
+        } else {
+            i += 1;
+        }
+    }
+    if removed > 0 {
+        state.is_dirty = true;
+        state.selection.clear();
+    }
+    state.status_message = Some(format!("Removed {removed} zero-length linedef(s)"));
+    removed
+}
+
+/// Auto-fill missing required textures with a default. For a 1-sided line:
+/// middle texture must be present. For a 2-sided line: upper present when
+/// adjacent ceilings differ; lower present when adjacent floors differ.
+/// Returns count of slots filled.
+pub fn fix_missing_textures(state: &mut EditorState) -> usize {
+    push_undo(state);
+    const DEFAULT_TEX: &str = "STARTAN2";
+    let Some(map) = state.map.as_mut() else { return 0 };
+
+    let is_blank = |s: &str| s.is_empty() || s == "-";
+    let mut filled = 0;
+
+    // We need read-only sector + sidedef refs to decide; collect required-fix
+    // tuples first, then mutate.
+    let mut to_fix: Vec<(usize, &'static str)> = Vec::new(); // (sidedef_idx, slot)
+    for ld in &map.linedefs {
+        if !ld.is_two_sided() || ld.back_sidedef == LineDef::NO_SIDEDEF {
+            // 1-sided: front sidedef middle must be present.
+            if ld.front_sidedef != LineDef::NO_SIDEDEF {
+                if let Some(sd) = map.sidedefs.get(ld.front_sidedef as usize) {
+                    if is_blank(&sd.middle_texture) {
+                        to_fix.push((ld.front_sidedef as usize, "middle"));
+                    }
+                }
+            }
+            continue;
+        }
+        let (Some(front_sd), Some(back_sd)) = (
+            map.sidedefs.get(ld.front_sidedef as usize),
+            map.sidedefs.get(ld.back_sidedef as usize),
+        ) else { continue };
+        let (Some(fs), Some(bs)) = (
+            map.sectors.get(front_sd.sector as usize),
+            map.sectors.get(back_sd.sector as usize),
+        ) else { continue };
+
+        if bs.ceiling_height < fs.ceiling_height && is_blank(&front_sd.upper_texture) {
+            to_fix.push((ld.front_sidedef as usize, "upper"));
+        }
+        if fs.ceiling_height < bs.ceiling_height && is_blank(&back_sd.upper_texture) {
+            to_fix.push((ld.back_sidedef as usize, "upper"));
+        }
+        if bs.floor_height > fs.floor_height && is_blank(&front_sd.lower_texture) {
+            to_fix.push((ld.front_sidedef as usize, "lower"));
+        }
+        if fs.floor_height > bs.floor_height && is_blank(&back_sd.lower_texture) {
+            to_fix.push((ld.back_sidedef as usize, "lower"));
+        }
+    }
+
+    for (idx, slot) in to_fix {
+        if let Some(sd) = map.sidedefs.get_mut(idx) {
+            match slot {
+                "middle" => sd.middle_texture = DEFAULT_TEX.into(),
+                "upper" => sd.upper_texture = DEFAULT_TEX.into(),
+                "lower" => sd.lower_texture = DEFAULT_TEX.into(),
+                _ => {}
+            }
+            filled += 1;
+        }
+    }
+    if filled > 0 {
+        state.is_dirty = true;
+    }
+    state.status_message = Some(format!("Filled {filled} missing texture slot(s) with {DEFAULT_TEX}"));
+    filled
+}
+
+/// Strip unused texture names — set to "-" when a slot doesn't need to render.
+/// 1-sided line: upper + lower not needed; only middle. 2-sided: middle only
+/// needed if explicitly desired (rare); upper only needed when adjacent
+/// ceilings differ; lower only when floors differ.
+pub fn remove_unused_textures(state: &mut EditorState) -> usize {
+    push_undo(state);
+    let Some(map) = state.map.as_mut() else { return 0 };
+    let mut cleared = 0;
+
+    let mut to_clear: Vec<(usize, &'static str)> = Vec::new();
+    for ld in &map.linedefs {
+        if !ld.is_two_sided() || ld.back_sidedef == LineDef::NO_SIDEDEF {
+            if ld.front_sidedef != LineDef::NO_SIDEDEF {
+                if let Some(sd) = map.sidedefs.get(ld.front_sidedef as usize) {
+                    if !sd.upper_texture.is_empty() && sd.upper_texture != "-" {
+                        to_clear.push((ld.front_sidedef as usize, "upper"));
+                    }
+                    if !sd.lower_texture.is_empty() && sd.lower_texture != "-" {
+                        to_clear.push((ld.front_sidedef as usize, "lower"));
+                    }
+                }
+            }
+            continue;
+        }
+        let (Some(front_sd), Some(back_sd)) = (
+            map.sidedefs.get(ld.front_sidedef as usize),
+            map.sidedefs.get(ld.back_sidedef as usize),
+        ) else { continue };
+        let (Some(fs), Some(bs)) = (
+            map.sectors.get(front_sd.sector as usize),
+            map.sectors.get(back_sd.sector as usize),
+        ) else { continue };
+
+        // Upper not needed if ceilings match.
+        if fs.ceiling_height == bs.ceiling_height {
+            if !front_sd.upper_texture.is_empty() && front_sd.upper_texture != "-" {
+                to_clear.push((ld.front_sidedef as usize, "upper"));
+            }
+            if !back_sd.upper_texture.is_empty() && back_sd.upper_texture != "-" {
+                to_clear.push((ld.back_sidedef as usize, "upper"));
+            }
+        }
+        // Lower not needed if floors match.
+        if fs.floor_height == bs.floor_height {
+            if !front_sd.lower_texture.is_empty() && front_sd.lower_texture != "-" {
+                to_clear.push((ld.front_sidedef as usize, "lower"));
+            }
+            if !back_sd.lower_texture.is_empty() && back_sd.lower_texture != "-" {
+                to_clear.push((ld.back_sidedef as usize, "lower"));
+            }
+        }
+    }
+
+    for (idx, slot) in to_clear {
+        if let Some(sd) = map.sidedefs.get_mut(idx) {
+            match slot {
+                "upper" => sd.upper_texture = "-".into(),
+                "lower" => sd.lower_texture = "-".into(),
+                _ => {}
+            }
+            cleared += 1;
+        }
+    }
+    if cleared > 0 {
+        state.is_dirty = true;
+    }
+    state.status_message = Some(format!("Cleared {cleared} unused texture slot(s)"));
+    cleared
+}
+
+// ---------------- Copy / Paste / Flip selection ----------------
+
+/// Copy current selection into the internal clipboard. Coordinates stored
+/// relative to the bounding-box centroid so paste lands intuitively at the
+/// cursor.
+pub fn copy_selection(state: &mut EditorState) {
+    use super::state::Clipboard;
+    let Some(map) = state.map.as_ref() else { return };
+    if state.selection.is_empty() {
+        state.status_message = Some("Copy: nothing selected.".into());
+        return;
+    }
+    match state.mode {
+        SelectionMode::Vertex => {
+            let verts: Vec<crate::wad::Vertex> = state
+                .selection
+                .iter()
+                .filter_map(|&i| map.vertices.get(i).copied())
+                .collect();
+            if verts.is_empty() {
+                return;
+            }
+            let cx = (verts.iter().map(|v| v.x as i32).sum::<i32>() / verts.len() as i32) as i16;
+            let cy = (verts.iter().map(|v| v.y as i32).sum::<i32>() / verts.len() as i32) as i16;
+            let rel: Vec<_> = verts.iter().map(|v| crate::wad::Vertex {
+                x: v.x - cx,
+                y: v.y - cy,
+            }).collect();
+            state.clipboard = Some(Clipboard::Vertices(rel));
+            state.status_message = Some(format!("Copied {} vertex/vertices", verts.len()));
+        }
+        SelectionMode::Thing => {
+            let things: Vec<crate::wad::Thing> = state
+                .selection
+                .iter()
+                .filter_map(|&i| map.things.get(i).copied())
+                .collect();
+            if things.is_empty() {
+                return;
+            }
+            let cx = (things.iter().map(|t| t.x as i32).sum::<i32>() / things.len() as i32) as i16;
+            let cy = (things.iter().map(|t| t.y as i32).sum::<i32>() / things.len() as i32) as i16;
+            let rel: Vec<_> = things.iter().map(|t| crate::wad::Thing {
+                x: t.x - cx,
+                y: t.y - cy,
+                ..*t
+            }).collect();
+            state.clipboard = Some(Clipboard::Things(rel));
+            state.status_message = Some(format!("Copied {} thing(s)", things.len()));
+        }
+        _ => {
+            state.status_message = Some("Copy: only Vertex and Thing modes supported.".into());
+        }
+    }
+}
+
+/// Paste clipboard at cursor. Each pasted object's relative coordinates are
+/// translated by the cursor world position. Mode is forced to match the
+/// clipboard contents.
+pub fn paste_clipboard(state: &mut EditorState) {
+    use super::state::Clipboard;
+    let Some(clip) = state.clipboard.clone() else {
+        state.status_message = Some("Paste: clipboard empty.".into());
+        return;
+    };
+    push_undo(state);
+    let Some(map) = state.map.as_mut() else { return };
+    let cx = state.cursor_world.x.round() as i32;
+    let cy = state.cursor_world.y.round() as i32;
+    let mut new_indices = Vec::new();
+
+    match clip {
+        Clipboard::Vertices(verts) => {
+            for v in &verts {
+                let nx = (v.x as i32 + cx).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                let ny = (v.y as i32 + cy).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                map.vertices.push(crate::wad::Vertex { x: nx, y: ny });
+                new_indices.push(map.vertices.len() - 1);
+            }
+            state.mode = SelectionMode::Vertex;
+        }
+        Clipboard::Things(things) => {
+            for t in &things {
+                let nx = (t.x as i32 + cx).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                let ny = (t.y as i32 + cy).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                map.things.push(crate::wad::Thing { x: nx, y: ny, ..*t });
+                new_indices.push(map.things.len() - 1);
+            }
+            state.mode = SelectionMode::Thing;
+        }
+    }
+    state.selection = new_indices;
+    state.is_dirty = true;
+    state.status_message = Some(format!("Pasted {} object(s)", state.selection.len()));
+}
+
+/// Flip selection along an axis through its bounding-box center. `horizontal`
+/// flips X (mirror left↔right); `!horizontal` flips Y (top↔bottom).
+pub fn flip_selection_axis(state: &mut EditorState, horizontal: bool) {
+    if state.selection.is_empty() {
+        return;
+    }
+    push_undo(state);
+    let Some(map) = state.map.as_mut() else { return };
+    // Compute bounding-box center for selected objects.
+    let (mut min_x, mut max_x, mut min_y, mut max_y) =
+        (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+    let positions: Vec<(i32, i32)> = match state.mode {
+        SelectionMode::Vertex => state.selection.iter()
+            .filter_map(|&i| map.vertices.get(i).map(|v| (v.x as i32, v.y as i32)))
+            .collect(),
+        SelectionMode::Thing => state.selection.iter()
+            .filter_map(|&i| map.things.get(i).map(|t| (t.x as i32, t.y as i32)))
+            .collect(),
+        _ => {
+            state.status_message = Some("Flip: only Vertex and Thing modes supported.".into());
+            return;
+        }
+    };
+    if positions.is_empty() {
+        return;
+    }
+    for &(x, y) in &positions {
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+        min_y = min_y.min(y);
+        max_y = max_y.max(y);
+    }
+    let cx = (min_x + max_x) / 2;
+    let cy = (min_y + max_y) / 2;
+
+    match state.mode {
+        SelectionMode::Vertex => {
+            for &i in &state.selection {
+                if let Some(v) = map.vertices.get_mut(i) {
+                    if horizontal {
+                        let new_x = (2 * cx - v.x as i32).clamp(i16::MIN as i32, i16::MAX as i32);
+                        v.x = new_x as i16;
+                    } else {
+                        let new_y = (2 * cy - v.y as i32).clamp(i16::MIN as i32, i16::MAX as i32);
+                        v.y = new_y as i16;
+                    }
+                }
+            }
+        }
+        SelectionMode::Thing => {
+            for &i in &state.selection {
+                if let Some(t) = map.things.get_mut(i) {
+                    if horizontal {
+                        let new_x = (2 * cx - t.x as i32).clamp(i16::MIN as i32, i16::MAX as i32);
+                        t.x = new_x as i16;
+                        // Mirror angle around the Y axis: 180 - angle.
+                        t.angle = (180 - t.angle).rem_euclid(360);
+                    } else {
+                        let new_y = (2 * cy - t.y as i32).clamp(i16::MIN as i32, i16::MAX as i32);
+                        t.y = new_y as i16;
+                        // Mirror angle around the X axis: -angle.
+                        t.angle = (-t.angle).rem_euclid(360);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    state.is_dirty = true;
+    state.status_message = Some(format!(
+        "Flipped {} {} object(s)",
+        state.selection.len(),
+        if horizontal { "horizontally" } else { "vertically" }
+    ));
+}
+
+/// Rotate selected vertices/things around their bounding-box center by degrees.
+pub fn rotate_selection(state: &mut EditorState, degrees: f32) {
+    if state.selection.is_empty() {
+        return;
+    }
+    push_undo(state);
+    let Some(map) = state.map.as_mut() else { return };
+    let radians = degrees.to_radians();
+    let cos_t = radians.cos();
+    let sin_t = radians.sin();
+
+    // Compute bounding-box center over selection.
+    let (mut min_x, mut max_x, mut min_y, mut max_y) =
+        (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+    let positions: Vec<(f32, f32)> = match state.mode {
+        SelectionMode::Vertex => state.selection.iter()
+            .filter_map(|&i| map.vertices.get(i).map(|v| (v.x as f32, v.y as f32)))
+            .collect(),
+        SelectionMode::Thing => state.selection.iter()
+            .filter_map(|&i| map.things.get(i).map(|t| (t.x as f32, t.y as f32)))
+            .collect(),
+        _ => {
+            state.status_message = Some("Rotate: only Vertex and Thing modes supported.".into());
+            return;
+        }
+    };
+    if positions.is_empty() { return; }
+    for &(x, y) in &positions {
+        min_x = min_x.min(x); max_x = max_x.max(x);
+        min_y = min_y.min(y); max_y = max_y.max(y);
+    }
+    let cx = (min_x + max_x) * 0.5;
+    let cy = (min_y + max_y) * 0.5;
+
+    let rotate_pt = |x: f32, y: f32| -> (f32, f32) {
+        let dx = x - cx;
+        let dy = y - cy;
+        (cx + dx * cos_t - dy * sin_t, cy + dx * sin_t + dy * cos_t)
+    };
+
+    match state.mode {
+        SelectionMode::Vertex => {
+            for &i in &state.selection {
+                if let Some(v) = map.vertices.get_mut(i) {
+                    let (nx, ny) = rotate_pt(v.x as f32, v.y as f32);
+                    v.x = nx.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                    v.y = ny.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                }
+            }
+        }
+        SelectionMode::Thing => {
+            for &i in &state.selection {
+                if let Some(t) = map.things.get_mut(i) {
+                    let (nx, ny) = rotate_pt(t.x as f32, t.y as f32);
+                    t.x = nx.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                    t.y = ny.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                    // Rotate facing angle to match.
+                    t.angle = (t.angle as i32 + degrees.round() as i32).rem_euclid(360) as i16;
+                }
+            }
+        }
+        _ => {}
+    }
+    state.is_dirty = true;
+    state.status_message = Some(format!("Rotated {} object(s) by {degrees}°", state.selection.len()));
+}
+
+/// Scale selected vertices/things around their bounding-box center by `factor`.
+/// `factor < 1.0` shrinks; > 1.0 grows. Rejects non-positive factors.
+pub fn scale_selection(state: &mut EditorState, factor: f32) {
+    if factor <= 0.0 {
+        state.status_message = Some("Scale: factor must be positive.".into());
+        return;
+    }
+    if state.selection.is_empty() {
+        return;
+    }
+    push_undo(state);
+    let Some(map) = state.map.as_mut() else { return };
+    let positions: Vec<(f32, f32)> = match state.mode {
+        SelectionMode::Vertex => state.selection.iter()
+            .filter_map(|&i| map.vertices.get(i).map(|v| (v.x as f32, v.y as f32)))
+            .collect(),
+        SelectionMode::Thing => state.selection.iter()
+            .filter_map(|&i| map.things.get(i).map(|t| (t.x as f32, t.y as f32)))
+            .collect(),
+        _ => {
+            state.status_message = Some("Scale: only Vertex and Thing modes supported.".into());
+            return;
+        }
+    };
+    if positions.is_empty() { return; }
+    let (mut min_x, mut max_x, mut min_y, mut max_y) =
+        (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+    for &(x, y) in &positions {
+        min_x = min_x.min(x); max_x = max_x.max(x);
+        min_y = min_y.min(y); max_y = max_y.max(y);
+    }
+    let cx = (min_x + max_x) * 0.5;
+    let cy = (min_y + max_y) * 0.5;
+
+    match state.mode {
+        SelectionMode::Vertex => {
+            for &i in &state.selection {
+                if let Some(v) = map.vertices.get_mut(i) {
+                    let nx = (cx + (v.x as f32 - cx) * factor).round();
+                    let ny = (cy + (v.y as f32 - cy) * factor).round();
+                    v.x = nx.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                    v.y = ny.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                }
+            }
+        }
+        SelectionMode::Thing => {
+            for &i in &state.selection {
+                if let Some(t) = map.things.get_mut(i) {
+                    let nx = (cx + (t.x as f32 - cx) * factor).round();
+                    let ny = (cy + (t.y as f32 - cy) * factor).round();
+                    t.x = nx.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                    t.y = ny.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                }
+            }
+        }
+        _ => {}
+    }
+    state.is_dirty = true;
+    state.status_message = Some(format!("Scaled {} object(s) by {factor:.2}", state.selection.len()));
+}
+
+/// Distribute a sector field linearly across the selection in selection-order.
+/// First and last selected sectors keep their values; intermediate sectors
+/// receive linearly interpolated values.
+pub fn gradient_sector_field(state: &mut EditorState, field: GradientField) {
+    if state.mode != SelectionMode::Sector || state.selection.len() < 3 {
+        state.dialog = Some(Dialog::Notice {
+            title: "Gradient".into(),
+            message: "Select at least 3 sectors first.".into(),
+        });
+        return;
+    }
+    push_undo(state);
+    let Some(map) = state.map.as_mut() else { return };
+    let n = state.selection.len();
+    let first = state.selection[0];
+    let last = state.selection[n - 1];
+    let (start_v, end_v) = match (
+        map.sectors.get(first).cloned(),
+        map.sectors.get(last).cloned(),
+    ) {
+        (Some(a), Some(b)) => match field {
+            GradientField::Floor => (a.floor_height as i32, b.floor_height as i32),
+            GradientField::Ceiling => (a.ceiling_height as i32, b.ceiling_height as i32),
+            GradientField::Brightness => (a.light_level as i32, b.light_level as i32),
+        },
+        _ => return,
+    };
+
+    for (i, &s_idx) in state.selection.iter().enumerate() {
+        if i == 0 || i == n - 1 {
+            continue; // endpoints unchanged
+        }
+        let t = i as f32 / (n - 1) as f32;
+        let v = (start_v as f32 + (end_v - start_v) as f32 * t).round() as i32;
+        if let Some(s) = map.sectors.get_mut(s_idx) {
+            match field {
+                GradientField::Floor => {
+                    s.floor_height = v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                }
+                GradientField::Ceiling => {
+                    s.ceiling_height = v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                }
+                GradientField::Brightness => {
+                    s.light_level = v.clamp(0, 255) as i16;
+                }
+            }
+        }
+    }
+    state.is_dirty = true;
+    let label = match field {
+        GradientField::Floor => "floor heights",
+        GradientField::Ceiling => "ceiling heights",
+        GradientField::Brightness => "brightness",
+    };
+    state.status_message = Some(format!("Gradient applied to {n} sector {label}"));
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum GradientField {
+    Floor,
+    Ceiling,
+    Brightness,
+}
+
+/// Maximum number of undo snapshots to keep.
+pub const UNDO_DEPTH: usize = 50;
+
+/// Push the current map onto the undo stack BEFORE a mutation. Cheap clone of
+/// `MapData` (a few Vec<i16/u16/String>); for very large maps this is still a
+/// few hundred KB which is fine.
+pub fn push_undo(state: &mut EditorState) {
+    let Some(map) = state.map.clone() else { return };
+    if state.undo_stack.len() >= UNDO_DEPTH {
+        state.undo_stack.remove(0);
+    }
+    state.undo_stack.push(map);
+}
+
+/// Pop one snapshot from the undo stack and restore it.
+pub fn pop_undo(state: &mut EditorState) {
+    let Some(prev) = state.undo_stack.pop() else {
+        state.status_message = Some("Undo: nothing to undo.".into());
+        return;
+    };
+    state.map = Some(prev);
+    state.selection.clear();
+    state.is_dirty = !state.undo_stack.is_empty();
+    state.status_message = Some(format!(
+        "Undo (depth: {}/{UNDO_DEPTH})",
+        state.undo_stack.len()
+    ));
+}
+
+// ---------------- Join / Merge sectors ----------------
+
+/// Join all selected sectors into the FIRST selected sector. Every sidedef
+/// whose sector matches a non-first selected index is rewritten to point at
+/// the first sector's index. Shared boundary linedefs are PRESERVED (the
+/// sectors look like a single sector but the geometry is unchanged).
+pub fn join_sectors(state: &mut EditorState) -> usize {
+    if state.mode != SelectionMode::Sector || state.selection.len() < 2 {
+        state.dialog = Some(Dialog::Notice {
+            title: "Join Sectors".into(),
+            message: "Select at least 2 sectors first.".into(),
+        });
+        return 0;
+    }
+    push_undo(state);
+    let target = state.selection[0] as u16;
+    let to_merge: std::collections::HashSet<u16> =
+        state.selection.iter().skip(1).map(|&i| i as u16).collect();
+
+    let Some(map) = state.map.as_mut() else { return 0 };
+    let mut count = 0;
+    for sd in map.sidedefs.iter_mut() {
+        if to_merge.contains(&sd.sector) {
+            sd.sector = target;
+            count += 1;
+        }
+    }
+    state.is_dirty = true;
+    state.selection = vec![target as usize];
+    state.status_message = Some(format!("Joined: {count} sidedef(s) reassigned to sector {target}"));
+    count
+}
+
+/// Merge: same as Join, but also delete linedefs whose front+back sidedefs
+/// both end up in the merged target sector (i.e. the boundary between joined
+/// sectors). Returns count of deleted linedefs.
+pub fn merge_sectors(state: &mut EditorState) -> usize {
+    if state.mode != SelectionMode::Sector || state.selection.len() < 2 {
+        state.dialog = Some(Dialog::Notice {
+            title: "Merge Sectors".into(),
+            message: "Select at least 2 sectors first.".into(),
+        });
+        return 0;
+    }
+    push_undo(state);
+    let target = state.selection[0] as u16;
+    let to_merge: std::collections::HashSet<u16> =
+        state.selection.iter().skip(1).map(|&i| i as u16).collect();
+
+    let Some(map) = state.map.as_mut() else { return 0 };
+    // Reassign sidedefs first.
+    for sd in map.sidedefs.iter_mut() {
+        if to_merge.contains(&sd.sector) {
+            sd.sector = target;
+        }
+    }
+    // Now delete linedefs where both sidedefs reference target.
+    let target = target;
+    let mut removed = 0;
+    let mut i = 0;
+    while i < map.linedefs.len() {
+        let ld = &map.linedefs[i];
+        if !ld.is_two_sided() || ld.back_sidedef == LineDef::NO_SIDEDEF {
+            i += 1;
+            continue;
+        }
+        let f = map.sidedefs.get(ld.front_sidedef as usize).map(|sd| sd.sector);
+        let b = map.sidedefs.get(ld.back_sidedef as usize).map(|sd| sd.sector);
+        if matches!((f, b), (Some(fs), Some(bs)) if fs == target && bs == target) {
+            map.linedefs.remove(i);
+            removed += 1;
+        } else {
+            i += 1;
+        }
+    }
+    state.is_dirty = true;
+    state.selection = vec![target as usize];
+    state.status_message = Some(format!("Merged: {removed} boundary linedef(s) removed"));
+    removed
+}
+
+// ---------------- Find / Find & Replace ----------------
+
+use super::state::FindKind;
+
+/// Run a find against the current map. Updates state.selection with matches
+/// and switches mode to match. Returns count.
+pub fn find_objects(state: &mut EditorState, kind: FindKind, needle: &str) -> usize {
+    let Some(map) = state.map.as_ref() else { return 0 };
+    let mut hits = Vec::new();
+    let needle_norm = needle.trim().to_uppercase();
+    let needle_num: Option<u16> = needle.trim().parse().ok();
+
+    let new_mode = match kind {
+        FindKind::LineDefTexture => {
+            for (i, ld) in map.linedefs.iter().enumerate() {
+                let mut matched = false;
+                for sd_idx in [ld.front_sidedef, ld.back_sidedef] {
+                    if sd_idx == LineDef::NO_SIDEDEF {
+                        continue;
+                    }
+                    if let Some(sd) = map.sidedefs.get(sd_idx as usize) {
+                        if sd.upper_texture.eq_ignore_ascii_case(&needle_norm)
+                            || sd.middle_texture.eq_ignore_ascii_case(&needle_norm)
+                            || sd.lower_texture.eq_ignore_ascii_case(&needle_norm)
+                        {
+                            matched = true;
+                            break;
+                        }
+                    }
+                }
+                if matched {
+                    hits.push(i);
+                }
+            }
+            SelectionMode::LineDef
+        }
+        FindKind::SectorFloorTexture => {
+            for (i, s) in map.sectors.iter().enumerate() {
+                if s.floor_texture.eq_ignore_ascii_case(&needle_norm) {
+                    hits.push(i);
+                }
+            }
+            SelectionMode::Sector
+        }
+        FindKind::SectorCeilingTexture => {
+            for (i, s) in map.sectors.iter().enumerate() {
+                if s.ceiling_texture.eq_ignore_ascii_case(&needle_norm) {
+                    hits.push(i);
+                }
+            }
+            SelectionMode::Sector
+        }
+        FindKind::LineDefAction => {
+            let Some(n) = needle_num else { return 0 };
+            for (i, ld) in map.linedefs.iter().enumerate() {
+                if ld.special_type == n {
+                    hits.push(i);
+                }
+            }
+            SelectionMode::LineDef
+        }
+        FindKind::SectorTag => {
+            let Some(n) = needle_num else { return 0 };
+            for (i, s) in map.sectors.iter().enumerate() {
+                if s.tag == n {
+                    hits.push(i);
+                }
+            }
+            SelectionMode::Sector
+        }
+        FindKind::ThingType => {
+            let Some(n) = needle_num else { return 0 };
+            for (i, t) in map.things.iter().enumerate() {
+                if t.thing_type == n {
+                    hits.push(i);
+                }
+            }
+            SelectionMode::Thing
+        }
+        FindKind::LineDefIndex => {
+            let Some(n) = needle_num else { return 0 };
+            if (n as usize) < map.linedefs.len() { hits.push(n as usize); }
+            SelectionMode::LineDef
+        }
+        FindKind::SectorIndex => {
+            let Some(n) = needle_num else { return 0 };
+            if (n as usize) < map.sectors.len() { hits.push(n as usize); }
+            SelectionMode::Sector
+        }
+        FindKind::ThingIndex => {
+            let Some(n) = needle_num else { return 0 };
+            if (n as usize) < map.things.len() { hits.push(n as usize); }
+            SelectionMode::Thing
+        }
+        FindKind::VertexIndex => {
+            let Some(n) = needle_num else { return 0 };
+            if (n as usize) < map.vertices.len() { hits.push(n as usize); }
+            SelectionMode::Vertex
+        }
+    };
+
+    let count = hits.len();
+    state.mode = new_mode;
+    state.selection = hits;
+    if count > 0 {
+        focus_on_selection(state);
+    }
+    state.status_message = Some(format!("Found {count} match(es)"));
+    count
+}
+
+/// Replace all instances of `needle` with `replacement` for the given kind.
+pub fn replace_objects(
+    state: &mut EditorState,
+    kind: FindKind,
+    needle: &str,
+    replacement: &str,
+) -> usize {
+    if !kind.supports_replace() {
+        state.dialog = Some(Dialog::Notice {
+            title: "Replace".into(),
+            message: format!("{} cannot be replaced.", kind.label()),
+        });
+        return 0;
+    }
+    push_undo(state);
+    let Some(map) = state.map.as_mut() else { return 0 };
+    let needle_n = needle.trim().to_uppercase();
+    let repl_n = replacement.trim().to_uppercase();
+    let needle_num: Option<u16> = needle.trim().parse().ok();
+    let repl_num: Option<u16> = replacement.trim().parse().ok();
+    let mut count = 0;
+
+    match kind {
+        FindKind::LineDefTexture => {
+            for sd in map.sidedefs.iter_mut() {
+                for slot in [&mut sd.upper_texture, &mut sd.middle_texture, &mut sd.lower_texture] {
+                    if slot.eq_ignore_ascii_case(&needle_n) {
+                        *slot = repl_n.clone();
+                        count += 1;
+                    }
+                }
+            }
+        }
+        FindKind::SectorFloorTexture => {
+            for s in map.sectors.iter_mut() {
+                if s.floor_texture.eq_ignore_ascii_case(&needle_n) {
+                    s.floor_texture = repl_n.clone();
+                    count += 1;
+                }
+            }
+        }
+        FindKind::SectorCeilingTexture => {
+            for s in map.sectors.iter_mut() {
+                if s.ceiling_texture.eq_ignore_ascii_case(&needle_n) {
+                    s.ceiling_texture = repl_n.clone();
+                    count += 1;
+                }
+            }
+        }
+        FindKind::LineDefAction => {
+            let (Some(n), Some(r)) = (needle_num, repl_num) else { return 0 };
+            for ld in map.linedefs.iter_mut() {
+                if ld.special_type == n {
+                    ld.special_type = r;
+                    count += 1;
+                }
+            }
+        }
+        FindKind::SectorTag => {
+            let (Some(n), Some(r)) = (needle_num, repl_num) else { return 0 };
+            for s in map.sectors.iter_mut() {
+                if s.tag == n {
+                    s.tag = r;
+                    count += 1;
+                }
+            }
+        }
+        FindKind::ThingType => {
+            let (Some(n), Some(r)) = (needle_num, repl_num) else { return 0 };
+            for t in map.things.iter_mut() {
+                if t.thing_type == n {
+                    t.thing_type = r;
+                    count += 1;
+                }
+            }
+        }
+        _ => {}
+    }
+    if count > 0 {
+        state.is_dirty = true;
+    }
+    state.status_message = Some(format!("Replaced {count} occurrence(s)"));
+    count
+}
+
+// ---------------- Line-Draw Mode ----------------
+
+/// Toggle line-draw mode on/off.
+pub fn toggle_line_draw(state: &mut EditorState) {
+    use super::state::LineDrawState;
+    if state.line_draw.is_some() {
+        state.line_draw = None;
+        state.status_message = Some("Line-draw cancelled".into());
+    } else {
+        state.line_draw = Some(LineDrawState { chain: Vec::new() });
+        state.status_message = Some("Line-draw active. Right-click to place vertices, left-click to close.".into());
+    }
+}
+
+/// Place a vertex at the cursor in line-draw mode. Stitches to existing.
+pub fn line_draw_place_vertex(state: &mut EditorState) {
+    let snap = state.snap_size;
+    let cx = state.cursor_world.x;
+    let cy = state.cursor_world.y;
+    let nx = snap_world(cx, snap);
+    let ny = snap_world(cy, snap);
+    let Some(map) = state.map.as_mut() else { return };
+    let Some(line_draw) = state.line_draw.as_mut() else { return };
+
+    // Reuse existing vertex within stitch range.
+    let vi = if let Some(existing) = nearest_vertex_within(map, nx, ny, 2) {
+        existing as u16
+    } else {
+        map.vertices.push(crate::wad::Vertex { x: nx, y: ny });
+        (map.vertices.len() - 1) as u16
+    };
+
+    // If chain is non-empty, also create a linedef from the last vertex.
+    if let Some(&prev) = line_draw.chain.last() {
+        if prev != vi {
+            map.linedefs.push(crate::wad::LineDef {
+                start_vertex: prev,
+                end_vertex: vi,
+                flags: crate::wad::LineDef::FLAG_BLOCK_ALL,
+                special_type: 0,
+                sector_tag: 0,
+                front_sidedef: crate::wad::LineDef::NO_SIDEDEF,
+                back_sidedef: crate::wad::LineDef::NO_SIDEDEF,
+            });
+        }
+    }
+    line_draw.chain.push(vi);
+    state.is_dirty = true;
+}
+
+/// Try to close the current line-draw chain into a sector. Returns true if
+/// the chain was closed (left-click landed on the first vertex).
+pub fn line_draw_try_close(state: &mut EditorState) -> bool {
+    let snap = state.snap_size;
+    let cx = state.cursor_world.x;
+    let cy = state.cursor_world.y;
+    let nx = snap_world(cx, snap);
+    let ny = snap_world(cy, snap);
+    let Some(map) = state.map.as_mut() else { return false };
+    let Some(line_draw) = state.line_draw.as_mut() else { return false };
+    if line_draw.chain.len() < 3 {
+        return false;
+    }
+    let first_v = line_draw.chain[0];
+    let Some(start) = map.vertices.get(first_v as usize).copied() else { return false };
+    let dx = (start.x - nx).abs();
+    let dy = (start.y - ny).abs();
+    if dx > 2 || dy > 2 {
+        return false; // not close enough to first vertex
+    }
+
+    // Close: insert one final linedef from last vertex back to first.
+    let last = *line_draw.chain.last().unwrap();
+    if last != first_v {
+        map.linedefs.push(crate::wad::LineDef {
+            start_vertex: last,
+            end_vertex: first_v,
+            flags: crate::wad::LineDef::FLAG_BLOCK_ALL,
+            special_type: 0,
+            sector_tag: 0,
+            front_sidedef: crate::wad::LineDef::NO_SIDEDEF,
+            back_sidedef: crate::wad::LineDef::NO_SIDEDEF,
+        });
+    }
+
+    // Create a sector for the new region with default DOOM textures.
+    let new_sector = map.sectors.len() as u16;
+    map.sectors.push(crate::wad::Sector {
+        floor_height: 0,
+        ceiling_height: 128,
+        floor_texture: "FLOOR4_8".into(),
+        ceiling_texture: "CEIL3_5".into(),
+        light_level: 160,
+        sector_type: 0,
+        tag: 0,
+    });
+
+    // Walk every linedef created during this draw (last N linedefs in the
+    // map; identified by the chain's edges) and assign each a fresh sidedef
+    // pointing at the new sector. Front-side faces inward (CCW assumption).
+    let chain = line_draw.chain.clone();
+    let n = chain.len();
+    for i in 0..n {
+        let a = chain[i];
+        let b = chain[(i + 1) % n];
+        // Find the linedef matching (a, b) — should be one of the recently-added ones.
+        for ld in map.linedefs.iter_mut().rev().take(n) {
+            if ld.start_vertex == a && ld.end_vertex == b && ld.front_sidedef == crate::wad::LineDef::NO_SIDEDEF {
+                let sd_idx = map.sidedefs.len() as u16;
+                ld.front_sidedef = sd_idx;
+                map.sidedefs.push(crate::wad::SideDef {
+                    x_offset: 0,
+                    y_offset: 0,
+                    upper_texture: "-".into(),
+                    lower_texture: "-".into(),
+                    middle_texture: "STARTAN2".into(),
+                    sector: new_sector,
+                });
+                break;
+            }
+        }
+    }
+
+    state.line_draw = None;
+    state.mode = SelectionMode::Sector;
+    state.selection = vec![new_sector as usize];
+    state.is_dirty = true;
+    state.status_message = Some(format!("Sector {new_sector} created from line-draw"));
+    true
+}
+
+// ---------------- Prefabs (.epfab JSON files) ----------------
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PrefabFile {
+    version: u32,
+    vertices: Vec<crate::wad::Vertex>,
+    linedefs: Vec<crate::wad::LineDef>,
+    sidedefs: Vec<crate::wad::SideDef>,
+    sectors: Vec<crate::wad::Sector>,
+}
+
+/// Save the current Sector-mode selection as a .epfab JSON file. Picks the
+/// linedefs that face any of the selected sectors via SideDef and re-numbers
+/// vertex/sidedef/sector indices into the prefab's local index space.
+pub fn save_selection_as_prefab(state: &mut EditorState) {
+    if state.mode != SelectionMode::Sector || state.selection.is_empty() {
+        state.dialog = Some(Dialog::Notice {
+            title: "Save prefab".into(),
+            message: "Select one or more sectors first (Sector mode).".into(),
+        });
+        return;
+    }
+    let Some(map) = state.map.as_ref() else { return };
+
+    // Sectors first.
+    let sector_indices: Vec<u16> = state.selection.iter().map(|&i| i as u16).collect();
+    let mut sectors = Vec::new();
+    let mut sector_remap = std::collections::HashMap::new();
+    for (i, &orig) in sector_indices.iter().enumerate() {
+        if let Some(s) = map.sectors.get(orig as usize) {
+            sectors.push(s.clone());
+            sector_remap.insert(orig, i as u16);
+        }
+    }
+
+    // Sidedefs that point at any of these sectors.
+    let mut sidedefs = Vec::new();
+    let mut sidedef_remap = std::collections::HashMap::new();
+    for (i, sd) in map.sidedefs.iter().enumerate() {
+        if let Some(&new_sec) = sector_remap.get(&sd.sector) {
+            let mut new_sd = sd.clone();
+            new_sd.sector = new_sec;
+            sidedef_remap.insert(i as u16, sidedefs.len() as u16);
+            sidedefs.push(new_sd);
+        }
+    }
+
+    // Linedefs whose front or back sidedef is in sidedef_remap.
+    let mut linedefs = Vec::new();
+    let mut vertex_remap = std::collections::HashMap::new();
+    let mut vertices = Vec::new();
+    for ld in &map.linedefs {
+        let f = sidedef_remap.get(&ld.front_sidedef).copied();
+        let b = sidedef_remap.get(&ld.back_sidedef).copied();
+        if f.is_none() && b.is_none() {
+            continue;
+        }
+        let mut new_ld = *ld;
+        new_ld.front_sidedef = f.unwrap_or(crate::wad::LineDef::NO_SIDEDEF);
+        new_ld.back_sidedef = b.unwrap_or(crate::wad::LineDef::NO_SIDEDEF);
+        // Remap start/end vertices.
+        for vref in [&mut new_ld.start_vertex, &mut new_ld.end_vertex] {
+            let entry = vertex_remap.entry(*vref).or_insert_with(|| {
+                if let Some(v) = map.vertices.get(*vref as usize) {
+                    vertices.push(*v);
+                }
+                (vertices.len() - 1) as u16
+            });
+            *vref = *entry;
+        }
+        linedefs.push(new_ld);
+    }
+
+    // Centre on bounding box so paste lands at cursor naturally.
+    let (mut min_x, mut max_x, mut min_y, mut max_y) =
+        (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+    for v in &vertices {
+        min_x = min_x.min(v.x as i32); max_x = max_x.max(v.x as i32);
+        min_y = min_y.min(v.y as i32); max_y = max_y.max(v.y as i32);
+    }
+    let cx = ((min_x + max_x) / 2) as i16;
+    let cy = ((min_y + max_y) / 2) as i16;
+    for v in vertices.iter_mut() {
+        v.x = v.x.saturating_sub(cx);
+        v.y = v.y.saturating_sub(cy);
+    }
+
+    let prefab = PrefabFile { version: 1, vertices, linedefs, sidedefs, sectors };
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("EdMap Prefab", &["epfab"])
+        .set_file_name("prefab.epfab")
+        .save_file()
+    else {
+        return;
+    };
+    match serde_json::to_string_pretty(&prefab) {
+        Ok(json) => match std::fs::write(&path, json) {
+            Ok(()) => state.status_message = Some(format!("Saved prefab to {}", path.display())),
+            Err(e) => state.dialog = Some(Dialog::Notice {
+                title: "Save prefab".into(),
+                message: format!("Write failed: {e}"),
+            }),
+        },
+        Err(e) => state.dialog = Some(Dialog::Notice {
+            title: "Save prefab".into(),
+            message: format!("Serialize failed: {e}"),
+        }),
+    }
+}
+
+/// Load a .epfab file and place it at the cursor.
+pub fn load_prefab_at_cursor(state: &mut EditorState) {
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("EdMap Prefab", &["epfab"])
+        .pick_file()
+    else {
+        return;
+    };
+    let Ok(bytes) = std::fs::read(&path) else {
+        state.dialog = Some(Dialog::Notice {
+            title: "Load prefab".into(),
+            message: format!("Could not read {}", path.display()),
+        });
+        return;
+    };
+    let prefab: PrefabFile = match serde_json::from_slice(&bytes) {
+        Ok(p) => p,
+        Err(e) => {
+            state.dialog = Some(Dialog::Notice {
+                title: "Load prefab".into(),
+                message: format!("Parse failed: {e}"),
+            });
+            return;
+        }
+    };
+    push_undo(state);
+    let Some(map) = state.map.as_mut() else { return };
+    let cx = state.cursor_world.x.round() as i32;
+    let cy = state.cursor_world.y.round() as i32;
+
+    let v_offset = map.vertices.len() as u16;
+    let sd_offset = map.sidedefs.len() as u16;
+    let s_offset = map.sectors.len() as u16;
+
+    for v in &prefab.vertices {
+        let nx = (v.x as i32 + cx).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let ny = (v.y as i32 + cy).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        map.vertices.push(crate::wad::Vertex { x: nx, y: ny });
+    }
+    for s in &prefab.sectors {
+        map.sectors.push(s.clone());
+    }
+    for sd in &prefab.sidedefs {
+        let mut new_sd = sd.clone();
+        new_sd.sector = new_sd.sector.saturating_add(s_offset);
+        map.sidedefs.push(new_sd);
+    }
+    for ld in &prefab.linedefs {
+        let mut new_ld = *ld;
+        new_ld.start_vertex = new_ld.start_vertex.saturating_add(v_offset);
+        new_ld.end_vertex = new_ld.end_vertex.saturating_add(v_offset);
+        if new_ld.front_sidedef != crate::wad::LineDef::NO_SIDEDEF {
+            new_ld.front_sidedef = new_ld.front_sidedef.saturating_add(sd_offset);
+        }
+        if new_ld.back_sidedef != crate::wad::LineDef::NO_SIDEDEF {
+            new_ld.back_sidedef = new_ld.back_sidedef.saturating_add(sd_offset);
+        }
+        map.linedefs.push(new_ld);
+    }
+    state.is_dirty = true;
+    state.status_message = Some(format!(
+        "Loaded prefab: {} vertices, {} linedefs, {} sectors",
+        prefab.vertices.len(), prefab.linedefs.len(), prefab.sectors.len()
+    ));
+}
+
+/// Open the Test Map Settings dialog so the user can configure the source-port
+/// executable and the args template.
+pub fn open_test_map_settings(state: &mut EditorState) {
+    let cfg = &state.config.test_map;
+    state.dialog = Some(Dialog::TestMapSettings {
+        exe: cfg.exe.clone(),
+        args: cfg.args.clone(),
+    });
+}
+
+/// Save the current map to a temp PWAD and launch the configured source-port.
+/// If no executable is configured yet, opens the settings dialog instead.
+pub fn test_map(state: &mut EditorState) {
+    let Some(map) = state.map.as_ref() else {
+        state.dialog = Some(Dialog::Notice {
+            title: "Test Map".into(),
+            message: "No map to test.".into(),
+        });
+        return;
+    };
+    let exe = state.config.test_map.exe.trim().to_string();
+    if exe.is_empty() {
+        state.status_message = Some("Configure source-port first (File > Test map settings)".into());
+        open_test_map_settings(state);
+        return;
+    }
+
+    // Write a fresh PWAD to the OS temp dir. We always rebuild from the
+    // currently-loaded WAD so its custom textures/flats travel with the map.
+    let temp_path = std::env::temp_dir().join("edmap_test.wad");
+    let map_clone = map.clone();
+    let write_result = match state.wad.as_ref() {
+        Some(wad) => crate::wad::save_map_to_path(&temp_path, Some(wad), &map_clone),
+        None => crate::wad::save_map_to_path(&temp_path, None, &map_clone),
+    };
+    if let Err(e) = write_result {
+        state.dialog = Some(Dialog::Notice {
+            title: "Test Map".into(),
+            message: format!("Could not write temp PWAD: {e}"),
+        });
+        return;
+    }
+
+    let (episode, mapnum) = super::config::parse_map_warp(&map_clone.name);
+    let pwad_path = temp_path.to_string_lossy().to_string();
+    let template = state.config.test_map.args.clone();
+    let args: Vec<String> = template
+        .split_whitespace()
+        .map(|tok| {
+            tok.replace("%F", &pwad_path)
+                .replace("%L", &map_clone.name)
+                .replace("%E", &episode.to_string())
+                .replace("%M", &mapnum.to_string())
+        })
+        .collect();
+
+    match std::process::Command::new(&exe).args(&args).spawn() {
+        Ok(_child) => {
+            state.status_message = Some(format!(
+                "Launched {} ({})",
+                exe, map_clone.name
+            ));
+        }
+        Err(e) => {
+            state.dialog = Some(Dialog::Notice {
+                title: "Test Map".into(),
+                message: format!("Failed to launch '{exe}': {e}"),
+            });
+        }
+    }
 }

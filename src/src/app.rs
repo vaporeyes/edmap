@@ -2,10 +2,13 @@
 // ABOUTME: Owns the editor state (current WAD, current map, selection, view transform).
 
 mod checks;
+mod calculator;
 mod commands;
+mod config;
 mod dialog;
 mod hittest;
 mod keybindings;
+mod mem_probe;
 mod menu;
 mod sidebar;
 mod picker_data;
@@ -26,14 +29,18 @@ pub struct EdMapApp {
     /// Texture bank rebuilt whenever the active WAD changes. Keyed by wad path.
     bank: TextureBank,
     bank_for_path: Option<std::path::PathBuf>,
+    mem_probe: mem_probe::MemProbe,
 }
 
 impl EdMapApp {
     pub fn new() -> Self {
+        let mut state = EditorState::default();
+        state.config = config::EdMapConfig::load();
         Self {
-            state: EditorState::default(),
+            state,
             bank: TextureBank::default(),
             bank_for_path: None,
+            mem_probe: mem_probe::MemProbe::new(),
         }
     }
 
@@ -53,14 +60,17 @@ impl eframe::App for EdMapApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         keybindings::dispatch(ctx, &mut self.state);
         self.refresh_bank_if_needed();
+        self.mem_probe.refresh_if_due();
         title_bar(ctx);
 
+        let mem_free_kb = self.mem_probe.free_kb();
+        let mem_total_kb = self.mem_probe.total_kb();
         egui::SidePanel::left("sidebar")
             .resizable(false)
             .exact_width(160.0)
             .frame(egui::Frame::none().fill(theme::SIDEBAR_BG))
             .show(ctx, |ui| {
-                sidebar::draw(ui, &mut self.state, &mut self.bank);
+                sidebar::draw(ui, &mut self.state, &mut self.bank, mem_free_kb, mem_total_kb);
             });
 
         egui::CentralPanel::default()
@@ -76,6 +86,8 @@ impl eframe::App for EdMapApp {
         viewer::draw(ctx, &mut self.state, &mut self.bank);
         // Modals draw last so they're above everything else.
         dialog::draw(ctx, &mut self.state);
+        // Calculator window — non-modal, drawn on top.
+        calculator::draw(ctx, &mut self.state);
     }
 }
 

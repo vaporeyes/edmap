@@ -104,6 +104,9 @@ pub fn dispatch(ctx: &egui::Context, state: &mut EditorState) {
                     state.viewer_open = false;
                 } else if state.dialog.is_some() {
                     state.dialog = None;
+                } else if state.line_draw.is_some() {
+                    state.line_draw = None;
+                    state.status_message = Some("Line-draw cancelled".into());
                 } else {
                     state.open_menu = None;
                     state.status_message = None;
@@ -133,6 +136,17 @@ pub fn dispatch(ctx: &egui::Context, state: &mut EditorState) {
             if input.key_pressed(Key::CloseBracket) {
                 state.grid_size = next_grid_size(state.grid_size);
             }
+        }
+        // Ctrl-C / Ctrl-V = copy / paste selection.
+        if (input.modifiers.ctrl || input.modifiers.command) && input.key_pressed(Key::C) {
+            commands::copy_selection(state);
+        }
+        if (input.modifiers.ctrl || input.modifiers.command) && input.key_pressed(Key::V) {
+            commands::paste_clipboard(state);
+        }
+        // Ctrl-Z = pop multi-level undo stack.
+        if (input.modifiers.ctrl || input.modifiers.command) && input.key_pressed(Key::Z) {
+            commands::pop_undo(state);
         }
         // PgUp/PgDn = sector ceiling ±8; Shift = floor; Ctrl = light ±16.
         if input.key_pressed(Key::PageUp) {

@@ -34,8 +34,10 @@ pub const MENU_EDGE_LIGHT: Color32 = VGA_WHITE;
 pub const INFO_BOX_BG: Color32 = SIDEBAR_BG;
 // Viewport background — deep blue, matches original EdMap map view.
 pub const VIEWPORT_BG: Color32 = Color32::from_rgb(0x00, 0x00, 0x28);
-// Grid dot color.
-pub const GRID_DOT: Color32 = Color32::from_rgb(0x00, 0x00, 0x55);
+// Grid dot colors at three intensities. `GRID_DOT` is the default ("Normal").
+pub const GRID_DOT_DIM: Color32 = Color32::from_rgb(0x1a, 0x33, 0x55);
+pub const GRID_DOT: Color32 = Color32::from_rgb(0x33, 0x66, 0x99);
+pub const GRID_DOT_BRIGHT: Color32 = Color32::from_rgb(0x55, 0xaa, 0xcc);
 // LineDef stroke — bright on dark.
 pub const LINEDEF_NORMAL: Color32 = VGA_WHITE;
 pub const LINEDEF_TWO_SIDED: Color32 = VGA_GRAY;

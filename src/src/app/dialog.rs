@@ -77,6 +77,10 @@ fn title_for(dialog: &Dialog) -> &'static str {
             super::state::PickerKind::ThingType => "Choose Thing Type",
             super::state::PickerKind::LineDefAction => "Choose LineDef Action",
         },
+        Dialog::RotateSelection { .. } => "Rotate Selection",
+        Dialog::ScaleSelection { .. } => "Scale Selection",
+        Dialog::FindReplace { .. } => "Find / Replace",
+        Dialog::Preferences => "Preferences",
         Dialog::Polygon { .. } => "Polygon",
         Dialog::Door { .. } => "Door",
         Dialog::CurveLineDef { .. } => "Curve LineDef",
@@ -91,6 +95,7 @@ fn title_for(dialog: &Dialog) -> &'static str {
         Dialog::EditLineDef { .. } => "Edit LineDef",
         Dialog::EditSector { .. } => "Edit Sector",
         Dialog::EditThing { .. } => "Edit Thing",
+        Dialog::TestMapSettings { .. } => "Test Map Settings",
     }
 }
 
@@ -108,6 +113,11 @@ fn body(ui: &mut egui::Ui, state: &mut EditorState, dialog: Dialog) -> bool {
         Dialog::SaveWarning { pending } => save_warning_body(ui, state, pending),
         Dialog::ErrorList { results, cursor } => error_list_body(ui, state, results, cursor),
         Dialog::Picker { kind, expanded } => picker_body(ui, state, kind, expanded),
+        Dialog::RotateSelection { degrees } => rotate_selection_body(ui, state, degrees),
+        Dialog::ScaleSelection { percent } => scale_selection_body(ui, state, percent),
+        Dialog::FindReplace { kind, find, replace, replace_mode } =>
+            find_replace_body(ui, state, kind, find, replace, replace_mode),
+        Dialog::Preferences => preferences_body(ui, state),
         Dialog::Polygon { sides, radius } => polygon_body(ui, state, sides, radius),
         Dialog::Door { key, fast } => door_body(ui, state, key, fast),
         Dialog::CurveLineDef { vertices_per_line, curve_distance, delta_angle } =>
@@ -139,6 +149,7 @@ fn body(ui: &mut egui::Ui, state: &mut EditorState, dialog: Dialog) -> bool {
         } => stairs_body(
             ui, state, steps, rise, depth, width, direction, top_texture, side_texture,
         ),
+        Dialog::TestMapSettings { exe, args } => test_map_settings_body(ui, state, exe, args),
     }
 }
 
@@ -1507,4 +1518,229 @@ fn apply_picker_choice(
     }
     state.dialog = Some(stashed);
     state.status_message = Some(format!("Picked code {code}"));
+}
+
+fn rotate_selection_body(ui: &mut egui::Ui, state: &mut EditorState, degrees: String) -> bool {
+    let mut degrees = degrees;
+    ui.colored_label(theme::MENU_FG, "Rotate selected objects around their");
+    ui.colored_label(theme::MENU_FG, "bounding-box center.");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Degrees:");
+        ui.add(text_box(&mut degrees, 6));
+    });
+    ui.add_space(6.0);
+    let close = ui.horizontal(|ui| {
+        let ok = button(ui, "OK").clicked();
+        let cancel = button(ui, "cancel").clicked();
+        if ok {
+            let d: f32 = degrees.trim().parse().unwrap_or(0.0);
+            commands::rotate_selection(state, d);
+            return true;
+        }
+        cancel
+    }).inner;
+    if !close {
+        state.dialog = Some(Dialog::RotateSelection { degrees });
+    }
+    close
+}
+
+fn scale_selection_body(ui: &mut egui::Ui, state: &mut EditorState, percent: String) -> bool {
+    let mut percent = percent;
+    ui.colored_label(theme::MENU_FG, "Scale selected objects by percentage,");
+    ui.colored_label(theme::MENU_FG, "around their bounding-box center.");
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Percent (100=unchanged):");
+        ui.add(text_box(&mut percent, 6));
+    });
+    ui.add_space(6.0);
+    let close = ui.horizontal(|ui| {
+        let ok = button(ui, "OK").clicked();
+        let cancel = button(ui, "cancel").clicked();
+        if ok {
+            let p: f32 = percent.trim().parse().unwrap_or(100.0);
+            commands::scale_selection(state, p / 100.0);
+            return true;
+        }
+        cancel
+    }).inner;
+    if !close {
+        state.dialog = Some(Dialog::ScaleSelection { percent });
+    }
+    close
+}
+
+fn find_replace_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    kind: super::state::FindKind,
+    find: String,
+    replace: String,
+    replace_mode: bool,
+) -> bool {
+    use super::state::FindKind;
+    let mut kind = kind;
+    let mut find = find;
+    let mut replace = replace;
+    let mut replace_mode = replace_mode;
+
+    ui.colored_label(theme::MENU_FG, "Search type:");
+    egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+        for &k in FindKind::all() {
+            let active = k == kind;
+            let label = if active {
+                RichText::new(format!("• {}", k.label())).color(theme::VGA_YELLOW)
+            } else {
+                RichText::new(format!("  {}", k.label())).color(theme::VGA_BRIGHT_CYAN)
+            };
+            if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() {
+                kind = k;
+            }
+        }
+    });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Find:   ");
+        ui.add(text_box(&mut find, 16));
+    });
+
+    if kind.supports_replace() {
+        ui.checkbox(&mut replace_mode, "Replace mode");
+        if replace_mode {
+            ui.horizontal(|ui| {
+                ui.colored_label(theme::MENU_FG, "Replace:");
+                ui.add(text_box(&mut replace, 16));
+            });
+        }
+    } else {
+        replace_mode = false;
+    }
+    ui.add_space(6.0);
+
+    let close = ui.horizontal(|ui| {
+        let do_find = button(ui, "Find").clicked();
+        let do_replace = if replace_mode { button(ui, "Replace All").clicked() } else { false };
+        let cancel = button(ui, "Close").clicked();
+        if do_find {
+            commands::find_objects(state, kind, &find);
+            return true;
+        }
+        if do_replace {
+            commands::replace_objects(state, kind, &find, &replace);
+            return true;
+        }
+        cancel
+    }).inner;
+
+    if !close {
+        state.dialog = Some(Dialog::FindReplace { kind, find, replace, replace_mode });
+    }
+    close
+}
+
+fn preferences_body(ui: &mut egui::Ui, state: &mut EditorState) -> bool {
+    use crate::theme;
+    ui.colored_label(theme::MENU_FG, "Override editor colors. Changes apply immediately.");
+    ui.add_space(4.0);
+
+    let overrides = &mut state.theme_overrides;
+
+    fn color_row(
+        ui: &mut egui::Ui,
+        label: &str,
+        slot: &mut Option<egui::Color32>,
+        default: egui::Color32,
+    ) {
+        ui.horizontal(|ui| {
+            ui.colored_label(theme::MENU_FG, label);
+            let mut current = slot.unwrap_or(default);
+            if ui.color_edit_button_srgba(&mut current).changed() {
+                *slot = Some(current);
+            }
+            if ui.button("Reset").clicked() {
+                *slot = None;
+            }
+        });
+    }
+
+    egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+        color_row(ui, "Viewport background:", &mut overrides.viewport_bg, theme::VIEWPORT_BG);
+        color_row(ui, "LineDef normal:     ", &mut overrides.linedef_normal, theme::LINEDEF_NORMAL);
+        color_row(ui, "LineDef two-sided:  ", &mut overrides.linedef_two_sided, theme::LINEDEF_TWO_SIDED);
+        color_row(ui, "LineDef selected:   ", &mut overrides.linedef_selected, theme::LINEDEF_SELECTED);
+        color_row(ui, "Vertex dot:         ", &mut overrides.vertex_dot, theme::VERTEX_DOT);
+        color_row(ui, "Vertex hover:       ", &mut overrides.vertex_hover, theme::VERTEX_HOVER);
+        color_row(ui, "Thing marker:       ", &mut overrides.thing_mark, theme::THING_MARK);
+        color_row(ui, "Grid dot:           ", &mut overrides.grid_dot, theme::GRID_DOT);
+    });
+    ui.add_space(6.0);
+    ui.colored_label(theme::VGA_DARK_GRAY, "Hotkey customization not yet implemented.");
+    ui.add_space(6.0);
+
+    let close = ui.horizontal(|ui| {
+        let ok = button(ui, "Close").clicked();
+        let reset_all = button(ui, "Reset all").clicked();
+        if reset_all {
+            *overrides = super::state::ThemeOverrides::default();
+        }
+        ok
+    }).inner;
+    close
+}
+
+fn test_map_settings_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    exe: String,
+    args: String,
+) -> bool {
+    let mut exe = exe;
+    let mut args = args;
+
+    ui.colored_label(
+        theme::MENU_FG,
+        "Source-port to launch when you press Ctrl-F9 (Play map).",
+    );
+    ui.add_space(4.0);
+
+    ui.colored_label(theme::MENU_FG, "Executable (gzdoom, dsda-doom, ...):");
+    ui.horizontal(|ui| {
+        ui.add(text_box(&mut exe, 36));
+        if button(ui, "Browse").clicked() {
+            if let Some(path) = rfd::FileDialog::new().pick_file() {
+                exe = path.to_string_lossy().to_string();
+            }
+        }
+    });
+    ui.add_space(4.0);
+
+    ui.colored_label(theme::MENU_FG, "Arguments (placeholders: %F %L %E %M):");
+    ui.add(text_box(&mut args, 48));
+    ui.add_space(2.0);
+    ui.colored_label(theme::VGA_DARK_GRAY, "%F = temp PWAD path   %L = map name");
+    ui.colored_label(theme::VGA_DARK_GRAY, "%E = episode #         %M = map #");
+    ui.add_space(8.0);
+
+    let close = ui.horizontal(|ui| {
+        let ok = button(ui, "OK").clicked();
+        let cancel = button(ui, "Cancel").clicked();
+        if ok {
+            state.config.test_map.exe = exe.trim().to_string();
+            state.config.test_map.args = args.clone();
+            if let Err(e) = state.config.save() {
+                state.status_message = Some(format!("Could not save config: {e}"));
+            } else {
+                state.status_message = Some("Test map settings saved".into());
+            }
+            return true;
+        }
+        cancel
+    }).inner;
+
+    if !close {
+        state.dialog = Some(Dialog::TestMapSettings { exe, args });
+    }
+    close
 }
