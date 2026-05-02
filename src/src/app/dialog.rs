@@ -467,7 +467,7 @@ fn save_warning_body(ui: &mut egui::Ui, state: &mut EditorState, pending: Pendin
 }
 
 fn about_body(ui: &mut egui::Ui) -> bool {
-    ui.colored_label(theme::VGA_WHITE, "EdMap v1.40");
+    ui.colored_label(theme::VGA_WHITE, "EdMap v2.0.0");
     ui.colored_label(theme::MENU_FG, "DOOM-I/-II/HERETIC map editor");
     ui.add_space(2.0);
     ui.colored_label(theme::MENU_FG, "Original 1994 by Jeff Rabenhorst");

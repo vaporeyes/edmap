@@ -104,7 +104,7 @@ fn title_bar(ctx: &egui::Context) {
             ui.horizontal_centered(|ui| {
                 ui.colored_label(theme::MENU_FG, "EdMap");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.colored_label(theme::MENU_FG, "v1.40");
+                    ui.colored_label(theme::MENU_FG, "v2.0.0");
                 });
             });
         });

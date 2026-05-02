@@ -12,7 +12,7 @@ use app::EdMapApp;
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("EdMap v1.40")
+            .with_title("EdMap v2.0.0")
             .with_inner_size([960.0, 720.0])
             .with_min_inner_size([640.0, 480.0]),
         ..Default::default()

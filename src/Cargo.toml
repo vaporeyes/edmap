@@ -3,7 +3,7 @@
 
 [package]
 name = "edmap-nextgen"
-version = "0.1.0"
+version = "2.0.0"
 description = "EdMap v1.40 rebuild in Rust + egui"
 authors = ["jsh"]
 edition = "2021"

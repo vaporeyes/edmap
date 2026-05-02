@@ -11,7 +11,7 @@ texture decoding) layered on top.
 
 ```
                   EdMap
-                  v1.40 (rebuild)
+                  v2.0.0 (rebuild)
 
                   DOOM/DOOM2/HERETIC
                        Map Editor
