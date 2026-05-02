@@ -3046,6 +3046,46 @@ pub fn load_prefab_at_cursor(state: &mut EditorState) {
     ));
 }
 
+/// Render the current map to a PNG with the given options and prompt for a save path.
+pub fn export_picture(state: &mut EditorState, opts: super::export_picture::ExportOptions) {
+    let Some(map) = state.map.as_ref() else {
+        state.dialog = Some(Dialog::Notice {
+            title: "Export Picture".into(),
+            message: "No map to export.".into(),
+        });
+        return;
+    };
+    let bytes = match super::export_picture::render(map, &opts) {
+        Ok(b) => b,
+        Err(e) => {
+            state.dialog = Some(Dialog::Notice {
+                title: "Export Picture".into(),
+                message: format!("Render failed: {e}"),
+            });
+            return;
+        }
+    };
+    let suggested = format!("{}.png", map.name);
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("PNG image", &["png"])
+        .set_file_name(&suggested)
+        .save_file()
+    else {
+        return;
+    };
+    match std::fs::write(&path, &bytes) {
+        Ok(()) => {
+            state.status_message = Some(format!("Exported {} ({}x{})", path.display(), opts.width, opts.height));
+        }
+        Err(e) => {
+            state.dialog = Some(Dialog::Notice {
+                title: "Export Picture".into(),
+                message: format!("Write failed: {e}"),
+            });
+        }
+    }
+}
+
 /// Open the Test Map Settings dialog so the user can configure the source-port
 /// executable and the args template.
 pub fn open_test_map_settings(state: &mut EditorState) {

@@ -96,6 +96,7 @@ fn title_for(dialog: &Dialog) -> &'static str {
         Dialog::EditSector { .. } => "Edit Sector",
         Dialog::EditThing { .. } => "Edit Thing",
         Dialog::TestMapSettings { .. } => "Test Map Settings",
+        Dialog::ExportPicture { .. } => "Export Picture",
     }
 }
 
@@ -150,6 +151,8 @@ fn body(ui: &mut egui::Ui, state: &mut EditorState, dialog: Dialog) -> bool {
             ui, state, steps, rise, depth, width, direction, top_texture, side_texture,
         ),
         Dialog::TestMapSettings { exe, args } => test_map_settings_body(ui, state, exe, args),
+        Dialog::ExportPicture { width, height, with_grid, with_vertices, with_things, with_thing_bboxes } =>
+            export_picture_body(ui, state, width, height, with_grid, with_vertices, with_things, with_thing_bboxes),
     }
 }
 
@@ -1741,6 +1744,76 @@ fn test_map_settings_body(
 
     if !close {
         state.dialog = Some(Dialog::TestMapSettings { exe, args });
+    }
+    close
+}
+
+#[allow(clippy::too_many_arguments)]
+fn export_picture_body(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    width: String,
+    height: String,
+    with_grid: bool,
+    with_vertices: bool,
+    with_things: bool,
+    with_thing_bboxes: bool,
+) -> bool {
+    let mut width = width;
+    let mut height = height;
+    let mut with_grid = with_grid;
+    let mut with_vertices = with_vertices;
+    let mut with_things = with_things;
+    let mut with_thing_bboxes = with_thing_bboxes;
+
+    ui.colored_label(theme::MENU_FG, "Render the map to a PNG (auto-fit, 5% padding).");
+    ui.add_space(4.0);
+
+    ui.horizontal(|ui| {
+        ui.colored_label(theme::MENU_FG, "Width: ");
+        ui.add(text_box(&mut width, 6));
+        ui.add_space(8.0);
+        ui.colored_label(theme::MENU_FG, "Height:");
+        ui.add(text_box(&mut height, 6));
+    });
+    ui.add_space(4.0);
+
+    ui.checkbox(&mut with_grid, "Grid dots");
+    ui.checkbox(&mut with_vertices, "Vertex dots");
+    ui.checkbox(&mut with_things, "Things (X markers)");
+    ui.add_enabled(with_things, egui::Checkbox::new(&mut with_thing_bboxes, "Thing bounding boxes"));
+    ui.add_space(8.0);
+
+    let close = ui.horizontal(|ui| {
+        let ok = button(ui, "Export...").clicked();
+        let cancel = button(ui, "Cancel").clicked();
+        if ok {
+            let w: u32 = width.trim().parse().unwrap_or(1024).clamp(64, 16384);
+            let h: u32 = height.trim().parse().unwrap_or(1024).clamp(64, 16384);
+            let opts = super::export_picture::ExportOptions {
+                width: w,
+                height: h,
+                with_grid,
+                grid_size: state.grid_size.max(1),
+                with_vertices,
+                with_things,
+                with_thing_bboxes,
+            };
+            commands::export_picture(state, opts);
+            return true;
+        }
+        cancel
+    }).inner;
+
+    if !close {
+        state.dialog = Some(Dialog::ExportPicture {
+            width,
+            height,
+            with_grid,
+            with_vertices,
+            with_things,
+            with_thing_bboxes,
+        });
     }
     close
 }

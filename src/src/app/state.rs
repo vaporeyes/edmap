@@ -89,6 +89,15 @@ pub enum Dialog {
     },
     /// Configure the external source-port used by Test Map (Ctrl-F9).
     TestMapSettings { exe: String, args: String },
+    /// Export the current map view as a PNG.
+    ExportPicture {
+        width: String,
+        height: String,
+        with_grid: bool,
+        with_vertices: bool,
+        with_things: bool,
+        with_thing_bboxes: bool,
+    },
 }
 
 /// Visual intensity for the map grid dots.

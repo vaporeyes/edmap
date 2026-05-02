@@ -200,6 +200,7 @@ pub fn items_for(menu: &str) -> &'static [(&'static str, &'static str)] {
             ("Viewer", "F10"),
             ("Things filter", ""),
             ("Thing bounding boxes", ""),
+            ("Export picture", ""),
             ("Refresh display", ""),
         ],
         "Check" => &[
@@ -321,6 +322,16 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
                 vertices_per_line: "8".into(),
                 curve_distance: "64".into(),
                 delta_angle: "180".into(),
+            });
+        }
+        ("Display", "Export picture") => {
+            state.dialog = Some(Dialog::ExportPicture {
+                width: "1024".into(),
+                height: "1024".into(),
+                with_grid: false,
+                with_vertices: true,
+                with_things: true,
+                with_thing_bboxes: false,
             });
         }
         ("Display", "Things filter") => {

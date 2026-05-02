@@ -6,6 +6,7 @@ mod calculator;
 mod commands;
 mod config;
 mod dialog;
+mod export_picture;
 mod hittest;
 mod keybindings;
 mod mem_probe;
