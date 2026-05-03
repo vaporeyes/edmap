@@ -1,5 +1,5 @@
-// ABOUTME: Phase-1 software 3D walk/fly view. Walls only, flat-shaded by sector light.
-// ABOUTME: Builds wall quads from the current map, projects per-frame, painter's-algorithm sort.
+// ABOUTME: Phase 1.5 software 3D walk/fly view. Walls + floors/ceilings, flat-shaded by sector light.
+// ABOUTME: Per-sector loop walking + ear clipping for fills; near-plane triangle clipping; painter's-algorithm sort.
 
 use eframe::egui::{self, Color32, Pos2, Stroke, Vec2};
 
@@ -59,7 +59,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
 
     let cam = state.view3d_cam.as_ref().unwrap().clone();
     let fov_y = state.config.view3d.fov_degrees.clamp(30.0, 130.0).to_radians();
-    let tris = build_walls(map);
+    let mut tris = build_walls(map);
+    build_floors_ceilings(map, &mut tris);
     let mut projected = project_and_sort(&tris, &cam, available, fov_y);
 
     // Painter's algorithm: farthest first.
@@ -309,35 +310,30 @@ fn project_and_sort(
         [rx, ry2, rz2]
     };
 
+    let project = |p: [f32; 3]| -> Pos2 {
+        let sx = (p[0] / p[1]) * focal + cx;
+        let sy = -(p[2] / p[1]) * focal + cy;
+        egui::pos2(sx, sy)
+    };
+    let mut emit = |a: [f32; 3], b: [f32; 3], c: [f32; 3], color: Color32| {
+        let pa = project(a);
+        let pb = project(b);
+        let pc = project(c);
+        let bbox = bounding(&[pa, pb, pc]);
+        if !bbox.intersects(screen) {
+            return;
+        }
+        let depth = (a[1] + b[1] + c[1]) / 3.0;
+        out.push(ProjectedTri { screen: [pa, pb, pc], depth, color });
+    };
+
     for t in tris {
         let ca = to_cam(t.a);
         let cb = to_cam(t.b);
         let cc = to_cam(t.c);
-        // Skip if any vertex is behind/near the camera (Phase 1: hard cull, no clip).
-        if ca[1] < NEAR || cb[1] < NEAR || cc[1] < NEAR {
-            continue;
-        }
-        let project = |p: [f32; 3]| -> Pos2 {
-            let sx = (p[0] / p[1]) * focal + cx;
-            let sy = -(p[2] / p[1]) * focal + cy;
-            egui::pos2(sx, sy)
-        };
-        let pa = project(ca);
-        let pb = project(cb);
-        let pc = project(cc);
-        // Cheap off-screen reject
-        let bbox = bounding(&[pa, pb, pc]);
-        if !bbox.intersects(screen) {
-            continue;
-        }
-        let depth = (ca[1] + cb[1] + cc[1]) / 3.0;
-        out.push(ProjectedTri {
-            screen: [pa, pb, pc],
-            depth,
-            color: t.color,
-        });
-        let _ = half_w; // used below for potential clip; silence unused on pessimistic path
+        clip_near_and_emit(ca, cb, cc, t.color, &mut emit);
     }
+    let _ = half_w;
     // Far-to-near so painter overdraws correctly.
     out.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
     out
@@ -390,6 +386,294 @@ fn draw_hud(painter: &egui::Painter, rect: egui::Rect) {
         egui::FontId::new(12.0, egui::FontFamily::Monospace),
         theme::VGA_WHITE,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1.5b: near-plane clipping
+// ---------------------------------------------------------------------------
+
+/// Clip a triangle against the near plane (cam-space y = NEAR) and emit the
+/// resulting in-front triangles via `emit`. Preserves winding.
+fn clip_near_and_emit<F>(a: [f32; 3], b: [f32; 3], c: [f32; 3], color: Color32, emit: &mut F)
+where
+    F: FnMut([f32; 3], [f32; 3], [f32; 3], Color32),
+{
+    let ya = a[1] >= NEAR;
+    let yb = b[1] >= NEAR;
+    let yc = c[1] >= NEAR;
+    let n_in = (ya as u8) + (yb as u8) + (yc as u8);
+    match n_in {
+        0 => {}
+        3 => emit(a, b, c, color),
+        1 => {
+            // Rotate so the in-front vertex is `p`; q and r are behind. Order p→q→r matches a→b→c.
+            let (p, q, r) = if ya {
+                (a, b, c)
+            } else if yb {
+                (b, c, a)
+            } else {
+                (c, a, b)
+            };
+            let pq = lerp_to_near(p, q);
+            let rp = lerp_to_near(r, p);
+            emit(p, pq, rp, color);
+        }
+        2 => {
+            // Rotate so the behind vertex is `p`; q and r are in front. Order p→q→r matches a→b→c.
+            let (p, q, r) = if !ya {
+                (a, b, c)
+            } else if !yb {
+                (b, c, a)
+            } else {
+                (c, a, b)
+            };
+            let pq = lerp_to_near(p, q);
+            let rp = lerp_to_near(r, p);
+            // Quad in original winding: pq → q → r → rp. Triangulate as two tris.
+            emit(pq, q, r, color);
+            emit(pq, r, rp, color);
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn lerp_to_near(behind: [f32; 3], front: [f32; 3]) -> [f32; 3] {
+    // Solve for t where behind + t*(front - behind) has y == NEAR.
+    let denom = front[1] - behind[1];
+    let t = if denom.abs() < 1.0e-6 {
+        0.0
+    } else {
+        ((NEAR - behind[1]) / denom).clamp(0.0, 1.0)
+    };
+    [
+        behind[0] + t * (front[0] - behind[0]),
+        NEAR,
+        behind[2] + t * (front[2] - behind[2]),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1.5a: floor + ceiling triangulation
+// ---------------------------------------------------------------------------
+
+/// For every sector, walk its boundary edges into closed loops, ear-clip each
+/// loop, and emit floor + ceiling triangles into `out`.
+fn build_floors_ceilings(map: &MapData, out: &mut Vec<Tri3D>) {
+    let mut edges_by_sector: Vec<Vec<(u16, u16)>> = vec![Vec::new(); map.sectors.len()];
+    for ld in &map.linedefs {
+        // Front sidedef: directed edge start_v -> end_v (sector is on the left).
+        if let Some(s) = sidedef_sector(map, ld.front_sidedef) {
+            edges_by_sector[s].push((ld.start_vertex, ld.end_vertex));
+        }
+        // Back sidedef: reversed direction so the sector is again on the left.
+        if let Some(s) = sidedef_sector(map, ld.back_sidedef) {
+            edges_by_sector[s].push((ld.end_vertex, ld.start_vertex));
+        }
+    }
+
+    for (sector_idx, edges) in edges_by_sector.iter().enumerate() {
+        if edges.len() < 3 {
+            continue;
+        }
+        let sector = &map.sectors[sector_idx];
+        let floor_h = sector.floor_height as f32;
+        let ceil_h = sector.ceiling_height as f32;
+        if ceil_h <= floor_h {
+            // Closed (door / unwalkable) sector — still draw fills so it doesn't gap.
+        }
+        let floor_color = floor_color(sector.light_level);
+        let ceil_color = ceiling_color(sector.light_level);
+
+        for loop_verts in walk_loops(edges) {
+            // Ear-clipping needs CCW input. Compute signed area and flip if necessary.
+            let mut pts: Vec<(f32, f32)> = loop_verts
+                .iter()
+                .filter_map(|&vi| {
+                    map.vertices
+                        .get(vi as usize)
+                        .map(|v| (v.x as f32, v.y as f32))
+                })
+                .collect();
+            if pts.len() != loop_verts.len() {
+                continue; // dangling vertex index
+            }
+            if signed_area(&pts) < 0.0 {
+                pts.reverse();
+            }
+            let triangles = ear_clip(&pts);
+            for [i0, i1, i2] in triangles {
+                let (a, b, c) = (pts[i0], pts[i1], pts[i2]);
+                // Floor triangle: CCW from above => normal up.
+                out.push(Tri3D {
+                    a: [a.0, a.1, floor_h],
+                    b: [b.0, b.1, floor_h],
+                    c: [c.0, c.1, floor_h],
+                    color: floor_color,
+                });
+                // Ceiling triangle: reverse winding so normal points down.
+                out.push(Tri3D {
+                    a: [a.0, a.1, ceil_h],
+                    b: [c.0, c.1, ceil_h],
+                    c: [b.0, b.1, ceil_h],
+                    color: ceil_color,
+                });
+            }
+        }
+    }
+}
+
+fn floor_color(light: i16) -> Color32 {
+    let brightness = (light.clamp(0, 255) as f32 / 255.0).max(0.12);
+    Color32::from_rgb(
+        (140.0 * brightness) as u8,
+        (120.0 * brightness) as u8,
+        (95.0 * brightness) as u8,
+    )
+}
+
+fn ceiling_color(light: i16) -> Color32 {
+    let brightness = (light.clamp(0, 255) as f32 / 255.0).max(0.12);
+    Color32::from_rgb(
+        (95.0 * brightness) as u8,
+        (105.0 * brightness) as u8,
+        (130.0 * brightness) as u8,
+    )
+}
+
+/// Greedy chain-walker: pull edges into closed loops by matching tail→head.
+/// Returns each loop as an ordered vertex list (no duplicate close vertex).
+fn walk_loops(edges: &[(u16, u16)]) -> Vec<Vec<u16>> {
+    use std::collections::HashMap;
+    let mut by_start: HashMap<u16, Vec<usize>> = HashMap::new();
+    for (i, &(s, _)) in edges.iter().enumerate() {
+        by_start.entry(s).or_default().push(i);
+    }
+    let mut used = vec![false; edges.len()];
+    let mut loops: Vec<Vec<u16>> = Vec::new();
+
+    for start_edge in 0..edges.len() {
+        if used[start_edge] {
+            continue;
+        }
+        let loop_start = edges[start_edge].0;
+        let mut current = start_edge;
+        let mut path: Vec<u16> = vec![edges[current].0];
+        let mut safety = edges.len() + 4;
+        loop {
+            used[current] = true;
+            let (_, end) = edges[current];
+            if end == loop_start {
+                if path.len() >= 3 {
+                    loops.push(path);
+                }
+                break;
+            }
+            path.push(end);
+            // Pick the next available edge starting at `end`.
+            let next_idx = by_start
+                .get(&end)
+                .and_then(|cands| cands.iter().find(|&&i| !used[i]).copied());
+            let Some(n) = next_idx else { break };
+            current = n;
+            safety -= 1;
+            if safety == 0 {
+                break;
+            }
+        }
+    }
+    loops
+}
+
+fn signed_area(pts: &[(f32, f32)]) -> f32 {
+    let mut s = 0.0;
+    let n = pts.len();
+    for i in 0..n {
+        let (x0, y0) = pts[i];
+        let (x1, y1) = pts[(i + 1) % n];
+        s += x0 * y1 - x1 * y0;
+    }
+    s * 0.5
+}
+
+/// Ear-clip a CCW simple polygon. Returns triangle vertex indices into `pts`.
+fn ear_clip(pts: &[(f32, f32)]) -> Vec<[usize; 3]> {
+    let n = pts.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    if n == 3 {
+        return vec![[0, 1, 2]];
+    }
+    let mut prev: Vec<usize> = (0..n).map(|i| (i + n - 1) % n).collect();
+    let mut next: Vec<usize> = (0..n).map(|i| (i + 1) % n).collect();
+    let mut active = n;
+    let mut tris: Vec<[usize; 3]> = Vec::with_capacity(n - 2);
+    let mut i = 0usize;
+    let mut safety = n * n + 16;
+
+    while active > 3 && safety > 0 {
+        safety -= 1;
+        let p = prev[i];
+        let q = next[i];
+        if is_ear(pts, p, i, q, &next) {
+            tris.push([p, i, q]);
+            next[p] = q;
+            prev[q] = p;
+            active -= 1;
+            i = p;
+        } else {
+            i = q;
+        }
+    }
+    if active == 3 {
+        let i0 = i;
+        let i1 = next[i0];
+        let i2 = next[i1];
+        tris.push([i0, i1, i2]);
+    }
+    tris
+}
+
+fn is_ear(
+    pts: &[(f32, f32)],
+    p: usize,
+    i: usize,
+    q: usize,
+    next: &[usize],
+) -> bool {
+    let a = pts[p];
+    let b = pts[i];
+    let c = pts[q];
+    // Convex on a CCW polygon means the turn at b is a left turn -> cross > 0.
+    if cross2(sub(b, a), sub(c, b)) <= 0.0 {
+        return false;
+    }
+    // No other vertex inside this triangle.
+    let mut k = next[q];
+    while k != p {
+        if point_in_tri(pts[k], a, b, c) {
+            return false;
+        }
+        k = next[k];
+    }
+    true
+}
+
+fn sub(a: (f32, f32), b: (f32, f32)) -> (f32, f32) {
+    (a.0 - b.0, a.1 - b.1)
+}
+
+fn cross2(a: (f32, f32), b: (f32, f32)) -> f32 {
+    a.0 * b.1 - a.1 * b.0
+}
+
+fn point_in_tri(p: (f32, f32), a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> bool {
+    let d1 = cross2(sub(p, a), sub(b, a));
+    let d2 = cross2(sub(p, b), sub(c, b));
+    let d3 = cross2(sub(p, c), sub(a, c));
+    let has_neg = (d1 < 0.0) || (d2 < 0.0) || (d3 < 0.0);
+    let has_pos = (d1 > 0.0) || (d2 > 0.0) || (d3 > 0.0);
+    !(has_neg && has_pos)
 }
 
 /// Convenience used by keybindings — toggle 3D mode and reset camera each entry.
