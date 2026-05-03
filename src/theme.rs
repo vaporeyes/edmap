@@ -194,7 +194,7 @@ fn install_fonts(ctx: &egui::Context) {
     } else {
         eprintln!(
             "theme: no proportional font found in assets/. Drop PxPlus_IBM_VGA_9x16.ttf or \
-             roboto.ttf at src/assets/ to override the default."
+             roboto.ttf at assets/ to override the default."
         );
     }
 

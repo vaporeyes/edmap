@@ -47,18 +47,17 @@ See `specs/001-edmap-nextgen/ux-spec.md` for the full menu inventory.
 
 ## Build & run
 
-Requires Rust stable (tested on 1.78+). `cd src && cargo run`.
+Requires Rust stable (tested on 1.78+). `cargo run` from the repo root.
 
-Drop a TTF at `src/assets/`:
+Drop a TTF at `assets/`:
 
 - `PxPlus_IBM_VGA_9x16.ttf` (preferred — VileR's pixel-perfect IBM VGA bitmap)
 - or `roboto.ttf` (modern fallback)
 
 If neither is present, egui's default proportional renders. See
-`src/assets/README.md` for download links.
+`assets/README.md` for download links.
 
 ```bash
-cd src
 cargo run                  # debug build
 cargo run --release        # release build
 cargo test                 # 19 unit tests covering the WAD parser/writer,
