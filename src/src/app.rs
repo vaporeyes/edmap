@@ -17,6 +17,7 @@ mod picker_data;
 mod state;
 mod textures;
 mod things_table;
+mod view3d;
 mod viewer;
 mod viewport;
 
@@ -78,7 +79,11 @@ impl eframe::App for EdMapApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(theme::VIEWPORT_BG))
             .show(ctx, |ui| {
-                viewport::draw(ui, &mut self.state, &mut self.bank);
+                if self.state.view3d_open {
+                    view3d::draw(ui, &mut self.state);
+                } else {
+                    viewport::draw(ui, &mut self.state, &mut self.bank);
+                }
             });
 
         // Cascading menu bar lives across the top of the viewport row, sourced from

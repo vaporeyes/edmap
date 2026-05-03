@@ -397,6 +397,10 @@ pub struct EditorState {
     pub last_check_results: Vec<super::checks::CheckResult>,
     /// Persistent user preferences (test-map exe/args). Loaded at app start.
     pub config: super::config::EdMapConfig,
+    /// Phase-1 software 3D walk/fly view active flag.
+    pub view3d_open: bool,
+    /// Persistent fly-camera state. None until first 3D draw initializes it from the map.
+    pub view3d_cam: Option<super::view3d::Cam3D>,
 }
 
 impl Default for EditorState {
@@ -437,6 +441,8 @@ impl Default for EditorState {
             undo_stack: Vec::new(),
             last_check_results: Vec::new(),
             config: super::config::EdMapConfig::default(),
+            view3d_open: false,
+            view3d_cam: None,
         }
     }
 }

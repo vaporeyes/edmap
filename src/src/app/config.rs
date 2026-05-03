@@ -26,10 +26,41 @@ impl Default for TestMapConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct View3DConfig {
+    /// Reverse vertical mouse-look (drag down = look up).
+    pub invert_mouse_y: bool,
+    /// Reverse horizontal mouse-look (drag right = turn left).
+    pub invert_mouse_x: bool,
+    /// Mouse-look multiplier. 1.0 = default; lower = slower, higher = snappier.
+    pub mouse_sensitivity: f32,
+    /// Movement speed multiplier applied to base 320 units/sec.
+    pub move_speed: f32,
+    /// Multiplier applied while Shift is held.
+    pub sprint_multiplier: f32,
+    /// Vertical field-of-view in degrees.
+    pub fov_degrees: f32,
+}
+
+impl Default for View3DConfig {
+    fn default() -> Self {
+        Self {
+            invert_mouse_y: false,
+            invert_mouse_x: false,
+            mouse_sensitivity: 1.0,
+            move_speed: 1.0,
+            sprint_multiplier: 2.5,
+            fov_degrees: 75.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EdMapConfig {
     #[serde(default)]
     pub test_map: TestMapConfig,
+    #[serde(default)]
+    pub view3d: View3DConfig,
 }
 
 /// Returns the on-disk config path, or None if HOME is not set.

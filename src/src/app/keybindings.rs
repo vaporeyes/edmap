@@ -75,8 +75,18 @@ pub fn dispatch(ctx: &egui::Context, state: &mut EditorState) {
             }
         }
 
+        // Q toggles 3D walk/fly view. Bound outside modifier-gated block so it works anywhere.
+        if !any_modifier(&input.modifiers) && input.key_pressed(Key::Q) {
+            super::view3d::toggle(state);
+        }
+        // Esc exits 3D mode immediately, before the regular Esc handler runs.
+        if state.view3d_open && input.key_pressed(Key::Escape) {
+            super::view3d::toggle(state);
+        }
+
         // Mode keys outside the menu spec — keyboard-first feel from the original.
-        if !any_modifier(&input.modifiers) {
+        // Suppressed while the 3D view is active so WASD/etc. drive the camera, not editing.
+        if !any_modifier(&input.modifiers) && !state.view3d_open {
             // Sector mode + selected sector: digit and letter keys edit fields
             // instead of switching modes (matches EdMap's numbered shortcuts).
             // Tab and V still work for mode switching when this is active.

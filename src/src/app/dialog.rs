@@ -1762,6 +1762,31 @@ fn preferences_body(ui: &mut egui::Ui, state: &mut EditorState) -> bool {
         color_row(ui, "Vertex hover:       ", &mut overrides.vertex_hover, theme::VERTEX_HOVER);
         color_row(ui, "Thing marker:       ", &mut overrides.thing_mark, theme::THING_MARK);
         color_row(ui, "Grid dot:           ", &mut overrides.grid_dot, theme::GRID_DOT);
+
+        ui.add_space(8.0);
+        ui.colored_label(theme::VGA_WHITE, "3D view (Q to enter)");
+        let v3d = &mut state.config.view3d;
+        ui.checkbox(&mut v3d.invert_mouse_x, "Invert mouse X (horizontal)");
+        ui.checkbox(&mut v3d.invert_mouse_y, "Invert mouse Y (vertical)");
+        ui.horizontal(|ui| {
+            ui.colored_label(theme::MENU_FG, "Mouse sensitivity:");
+            ui.add(egui::Slider::new(&mut v3d.mouse_sensitivity, 0.1..=4.0).fixed_decimals(2));
+        });
+        ui.horizontal(|ui| {
+            ui.colored_label(theme::MENU_FG, "Move speed:       ");
+            ui.add(egui::Slider::new(&mut v3d.move_speed, 0.25..=4.0).fixed_decimals(2));
+        });
+        ui.horizontal(|ui| {
+            ui.colored_label(theme::MENU_FG, "Sprint multiplier:");
+            ui.add(egui::Slider::new(&mut v3d.sprint_multiplier, 1.0..=8.0).fixed_decimals(1));
+        });
+        ui.horizontal(|ui| {
+            ui.colored_label(theme::MENU_FG, "Field of view:    ");
+            ui.add(egui::Slider::new(&mut v3d.fov_degrees, 30.0..=130.0).suffix("°").fixed_decimals(0));
+        });
+        if button(ui, "Reset 3D defaults").clicked() {
+            *v3d = super::config::View3DConfig::default();
+        }
     });
     ui.add_space(6.0);
     ui.colored_label(theme::VGA_DARK_GRAY, "Hotkey customization not yet implemented.");
@@ -1775,6 +1800,11 @@ fn preferences_body(ui: &mut egui::Ui, state: &mut EditorState) -> bool {
         }
         ok
     }).inner;
+    if close {
+        if let Err(e) = state.config.save() {
+            state.status_message = Some(format!("Save preferences: {e}"));
+        }
+    }
     close
 }
 
