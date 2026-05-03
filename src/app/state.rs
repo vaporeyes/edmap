@@ -401,6 +401,12 @@ pub struct EditorState {
     pub view3d_open: bool,
     /// Persistent fly-camera state. None until first 3D draw initializes it from the map.
     pub view3d_cam: Option<super::view3d::Cam3D>,
+    /// True when the 3D viewport has captured the pointer for FPS-style mouselook.
+    /// Click in 3D mode to enter, Esc to release (a second Esc then exits 3D entirely).
+    pub view3d_capture: bool,
+    /// Cached walls + floor/ceiling triangles for the 3D viewport. Rebuilt only
+    /// when the map fingerprint changes; thing sprites are recomputed per-frame.
+    pub view3d_geom_cache: super::view3d::GeometryCache,
 }
 
 impl Default for EditorState {
@@ -443,6 +449,8 @@ impl Default for EditorState {
             config: super::config::EdMapConfig::default(),
             view3d_open: false,
             view3d_cam: None,
+            view3d_capture: false,
+            view3d_geom_cache: super::view3d::GeometryCache::default(),
         }
     }
 }
