@@ -9,6 +9,11 @@ documentation file. Aims for visual + behavioral fidelity to the DOS original
 with modern conveniences (native file pickers, Save warnings, Undo, real
 texture decoding) layered on top.
 
+![EdMap editing E1M1](screenshots/editor-layout-E1M1.png)
+
+A short walkthrough video is at [`screenshots/edmap2.0video.mov`](screenshots/edmap2.0video.mov)
+(GitHub renders it inline; download to play locally).
+
 ```
                   EdMap
                   v2.0.0 (rebuild)
@@ -19,7 +24,8 @@ texture decoding) layered on top.
 
 ## Status
 
-Working today (16/49 menu items real, 33 still surface "not implemented yet"):
+Most original menu items are now wired. Recent additions: a software/GL 3D walk-around
+view, sector style clipboard, tag-line tool, and an "Enhance map" combo cleaner.
 
 | Area                       | Status                                                                  |
 |----------------------------|-------------------------------------------------------------------------|
@@ -38,12 +44,19 @@ Working today (16/49 menu items real, 33 still surface "not implemented yet"):
 | Polygon construction       | Sectors > Polygon — N-gon with CCW winding                              |
 | Stairs construction        | Automatic > Stairs — N rectangular sectors stacked, 4 directions        |
 | Door construction          | Automatic > Door — closes selected sector + applies door-action special |
+| 3D walk-around view        | Press `Q` to toggle. Real-GL renderer (`egui_glow` + `glow`) with textured walls (DOOM pegging flags), textured FLAT floors/ceilings, billboard things colored by category, fly-cam, drag-to-look, depth buffer, geometry cache, sector-hole triangulation |
+| Tag line to sector         | F7 — pick a linedef, click a sector, both get a shared free tag        |
+| Sector style clipboard     | Shift-F8 grab, Alt-F8 apply textures only, Ctrl-F8 apply full style    |
+| Enhance map (Ctrl-E)       | One button: zero-length cleanup + missing-texture fill + unused-texture sweep |
+| Find / Replace             | Ctrl-F — by linedef texture, flat, action, sector tag, thing type      |
+| Map shift / expand / light | Map utilities dialogs                                                    |
+| Sector Rotate / Size       | `R` / `Z` — rotate or scale selected sectors around centroid           |
+| Calculator                 | Info > Calculator — DOS-style integer calculator overlay               |
+| Test map                   | Ctrl-F9 — shells out to a configured source port (gzdoom / dsda-doom / etc.) |
 
-Not yet implemented (surface "not implemented yet" notices):
-Lift, Teleporter, Texture replace, Map shift/expand/light, Find objects,
-Tag line to sector, Sector Rotate/Size/Texture-style/Edit-styles/Grab-style,
-Configure align, Align textures, Build & save, Play map, Calculator, etc.
-See `specs/001-edmap-nextgen/ux-spec.md` for the full menu inventory.
+Still missing or partial: Build & save, F1 contextual help, the auto-align
+recursive walk only goes forward (not backward) and assumes 64-px texture
+width. See `specs/001-edmap-nextgen/ux-spec.md` for the full menu inventory.
 
 ## Build & run
 
@@ -82,7 +95,8 @@ sidebar is rendered live; every hotkey shown is also wired to its action.
 | Add/split       | `Ins`                                    |
 | Edit properties | `Enter`                                  |
 | Mode switch     | `Tab` cycles, or `1`/`2`/`3`/`4`         |
-| Cancel          | `Esc` (closes viewer / dialog / menu)    |
+| 3D view         | `Q` toggles fly-camera; WASD move, Space/E up/down, drag to look, Shift sprint |
+| Cancel          | `Esc` (closes viewer / dialog / menu / cancels tag tool / exits 3D view) |
 
 ### Menu hotkeys (verbatim from EdMap v1.40)
 
@@ -126,32 +140,38 @@ sidebar is rendered live; every hotkey shown is also wired to its action.
 
 ```
 edmap/
+├── Cargo.toml / Cargo.lock      crate root is the repo root
 ├── EDMAP.EXE / EDMAPSYS.EXE     original DOS binaries (1994), kept for RE
 ├── README.md                    this file
-├── src/                         Rust project root (Cargo.toml lives here)
-│   ├── Cargo.toml
-│   ├── assets/                  drop bgi/roboto/IBM-VGA TTFs here
-│   └── src/
-│       ├── main.rs              eframe entry
-│       ├── theme.rs             VGA palette, bevels, font loader
-│       ├── wad/                 IWAD/PWAD reader + writer + texture decoder
-│       │   ├── header.rs        magic + directory parse
-│       │   ├── lump.rs          Wad container + map enumeration
-│       │   ├── map.rs           THINGS/LINEDEFS/SIDEDEFS/VERTEXES/SECTORS records
-│       │   ├── texture.rs       PLAYPAL, PNAMES, TEXTURE1/2, Patch, Flat
-│       │   └── write.rs         PWAD assembly (fresh + preserve modes)
-│       └── app/
-│           ├── state.rs         EditorState + Dialog + ViewerCategory
-│           ├── sidebar.rs       title, menu list, MAP info, status, mode tabs, panels
-│           ├── menu.rs          cascading menu rendering + handle_command dispatcher
-│           ├── viewport.rs      map canvas: grid, vertices, lines, things
-│           ├── viewer.rs        F10 texture viewer with pick mode
-│           ├── textures.rs      lazy texture-handle cache
-│           ├── dialog.rs        all modal panels (About, Edit*, Polygon, Door, etc)
-│           ├── commands.rs      every map mutation; tested
-│           ├── checks.rs        map validators (no-length lines, missing exit, etc.)
-│           ├── hittest.rs       point→object hit-testing for selection
-│           └── keybindings.rs   global key dispatch (walks the menu spec)
+├── assets/                      drop bgi/roboto/IBM-VGA TTFs here
+├── screenshots/                 README media (PNG + walkthrough MOV)
+├── edmap-decompiled/            decompiled C from the original DOS suite (for porting reference)
+├── src/
+│   ├── main.rs                  eframe entry
+│   ├── theme.rs                 VGA palette, bevels, font loader
+│   ├── wad/                     IWAD/PWAD reader + writer + texture decoder
+│   │   ├── header.rs            magic + directory parse
+│   │   ├── lump.rs              Wad container + map enumeration
+│   │   ├── map.rs               THINGS/LINEDEFS/SIDEDEFS/VERTEXES/SECTORS records
+│   │   ├── texture.rs           PLAYPAL, PNAMES, TEXTURE1/2, Patch, Flat
+│   │   └── write.rs             PWAD assembly (fresh + preserve modes)
+│   └── app/
+│       ├── state.rs             EditorState + Dialog + ViewerCategory + 3D camera + caches
+│       ├── sidebar.rs           title, menu list, MAP info, status, mode tabs, panels
+│       ├── menu.rs              cascading menu rendering + handle_command dispatcher
+│       ├── viewport.rs          2D map canvas: grid, vertices, lines, things, sector hover
+│       ├── view3d.rs            3D walk-around: camera, geometry build, ear-clip with hole bridges
+│       ├── view3d_gl.rs         GL renderer: shaders, VBOs, texture cache, depth buffer
+│       ├── viewer.rs            F10 texture viewer with pick mode
+│       ├── textures.rs          lazy texture cache (egui handles + raw RGBA for GL)
+│       ├── map_titles.rs        canonical IWAD map titles (E1M1 "Hangar" etc.)
+│       ├── dialog.rs            all modal panels (About, Edit*, Polygon, Door, etc.)
+│       ├── commands.rs          every map mutation; tested
+│       ├── checks.rs            map validators (no-length lines, missing exit, etc.)
+│       ├── hittest.rs           point→object hit-testing for selection
+│       ├── config.rs            persistent prefs (test-map exe + 3D view config)
+│       ├── calculator.rs        DOS-style integer calculator overlay
+│       └── keybindings.rs       global key dispatch (walks the menu spec)
 └── specs/001-edmap-nextgen/
     ├── ux-spec.md               full menu tree, dialog catalog, error catalog
     └── re-notes.md              reverse-engineering log (radare2 + DOSBox-X)
@@ -161,9 +181,13 @@ edmap/
 
 Intentional departures, in rough order of how often they'll bite you:
 
-- **No DOOM engine bundled.** "Play map" / "Build & save" depend on an
-  external port (e.g. dsda-doom, GZDoom) at runtime; the editor exports a
-  PWAD and we'd shell out — both still placeholder.
+- **No DOOM engine bundled.** "Play map" shells out to a configured external
+  port (gzdoom, dsda-doom, etc.) — set the path + arg template under
+  File (map) → Test map settings. Internal nodes-builder for "Build & save"
+  is still placeholder; a node builder runs at PWAD-build time when needed.
+- **3D view is editor-side, not a play preview.** Q toggles a fly-camera with
+  textured walls/floors/ceilings and thing markers, useful for spotting
+  height/texture mistakes without leaving the editor.
 - **No 16-bit XMS / disk swapping.** Modern OSes have plenty of RAM.
 - **Native file dialogs** via `rfd` instead of the home-brewed in-app file
   picker. Faster, integrates with macOS/Linux/Windows file systems.
