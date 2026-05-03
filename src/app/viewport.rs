@@ -320,6 +320,19 @@ fn handle_input(
     }
     // Click-to-select. Shift extends the selection; plain click replaces it.
     if response.clicked() {
+        // Tag tool: a single click anywhere resolves to a sector pick and
+        // links it to the previously-selected linedef. Bypasses normal
+        // selection handling so the user's mode/selection isn't disturbed.
+        if state.tag_link_pending.is_some() {
+            let cursor = (state.cursor_world.x, state.cursor_world.y);
+            let sector_tol = (PICK_TOL_PIXELS * 4.0 / state.view_zoom).max(2.0);
+            if let Some(sec_idx) = hittest::sector_under(state.map.as_ref().unwrap(), cursor, sector_tol) {
+                commands::finish_tag_link(state, sec_idx);
+            } else {
+                state.status_message = Some("Tag tool: click missed any sector — try again or Esc to cancel".into());
+            }
+            return;
+        }
         let shift = ui.input(|i| i.modifiers.shift);
         apply_click(state, hover, shift);
     }
