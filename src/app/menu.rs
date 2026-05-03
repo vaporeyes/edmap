@@ -166,6 +166,7 @@ pub fn items_for(menu: &str) -> &'static [(&'static str, &'static str)] {
             ("Fix zero-length linedefs", ""),
             ("Fix missing textures", ""),
             ("Remove unused textures", ""),
+            ("Enhance map", ""),
         ],
         "Sectors" => &[
             ("Polygon", "Ctrl-P"),
@@ -287,6 +288,7 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
                 replace_mode: false,
             });
         }
+        ("Edit", "Tag line to sector") => super::commands::begin_tag_link(state),
         ("Map utilities", "Shift Map (X/Y/Z)") => {
             state.dialog = Some(Dialog::ShiftMap {
                 dx: "0".into(),
@@ -310,6 +312,7 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
         ("Map utilities", "Remove unused textures") => {
             super::commands::remove_unused_textures(state);
         }
+        ("Map utilities", "Enhance map") => super::commands::enhance_map(state),
         ("Map utilities", "Light adjustment") => {
             state.dialog = Some(Dialog::LightAdjust {
                 a: "100".into(),
@@ -331,6 +334,9 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
         ("Sectors", "Gradient brightness") => {
             super::commands::gradient_sector_field(state, super::commands::GradientField::Brightness);
         }
+        ("Sectors", "Grab style") => super::commands::grab_sector_style(state),
+        ("Sectors", "Texture style") => super::commands::apply_sector_style_textures(state),
+        ("Sectors", "Edit styles") => super::commands::apply_sector_style_all(state),
         ("Sectors", "Curve LineDef") => {
             state.dialog = Some(Dialog::CurveLineDef {
                 vertices_per_line: "8".into(),

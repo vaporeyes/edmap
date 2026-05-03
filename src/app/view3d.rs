@@ -1,9 +1,14 @@
-// ABOUTME: Phase 1.5 software 3D walk/fly view. Walls + floors/ceilings, flat-shaded by sector light.
-// ABOUTME: Per-sector loop walking + ear clipping for fills; near-plane triangle clipping; painter's-algorithm sort.
+// ABOUTME: Phase 2.0a GL-backed 3D walk/fly view. Walls + floors/ceilings + sprites built on CPU,
+// ABOUTME: handed to view3d_gl::Renderer3D via egui PaintCallback for proper depth-buffer rendering.
 
-use eframe::egui::{self, Color32, Pos2, Stroke, Vec2};
+use std::sync::{Arc, Mutex};
+
+use eframe::egui::{self, Color32};
+use eframe::egui_glow;
 
 use super::state::EditorState;
+use super::textures::TextureBank;
+use super::view3d_gl::{RenderInput, Renderer3D, WallUpload};
 use crate::theme;
 use crate::wad::{LineDef, MapData};
 
@@ -32,7 +37,12 @@ impl Cam3D {
     }
 }
 
-pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
+pub fn draw(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    bank: &TextureBank,
+    renderer: Arc<Mutex<Renderer3D>>,
+) {
     let available = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(available, egui::Sense::click_and_drag());
 
@@ -43,9 +53,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
     handle_input(ui, &response, state, dt);
 
     let painter = ui.painter_at(available);
-    painter.rect_filled(available, 0.0, Color32::from_rgb(18, 22, 34));
 
     let Some(map) = state.map.as_ref() else {
+        painter.rect_filled(available, 0.0, Color32::from_rgb(18, 22, 34));
         painter.text(
             available.center(),
             egui::Align2::CENTER_CENTER,
@@ -60,74 +70,166 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState) {
     let cam = state.view3d_cam.as_ref().unwrap().clone();
     let fov_y = state.config.view3d.fov_degrees.clamp(30.0, 130.0).to_radians();
     ensure_geometry_cache(map, &mut state.view3d_geom_cache);
-    // Sprites are camera-yaw-dependent so they're rebuilt every frame.
+
+    // Decode any textures the renderer hasn't received yet for this map.
+    // The renderer dedupes by id, so we only need to send each texture once
+    // per cache invalidation; uploaded_textures tracks what we've sent.
+    let mut wall_uploads: Vec<WallUpload> = Vec::new();
+    if let Some(wad) = state.wad.as_ref() {
+        for (kind, name) in &state.view3d_geom_cache.wall_tex_names {
+            let id = texture_name_id(*kind, name);
+            if state.view3d_geom_cache.uploaded_textures.contains(&id) {
+                continue;
+            }
+            let decoded = match kind {
+                TextureKind::Wall => bank.wall_rgba(wad, name),
+                TextureKind::Flat => bank.flat_rgba(wad, name),
+            };
+            if let Some((w, h, pixels)) = decoded {
+                wall_uploads.push(WallUpload { id, width: w, height: h, pixels });
+            }
+            // Mark as "tried" either way so we don't re-decode missing textures.
+            state.view3d_geom_cache.uploaded_textures.insert(id);
+        }
+    }
+
+    // Flat-shaded floors + ceilings packed for the color shader.
+    let mut static_verts: Vec<f32> = Vec::with_capacity(state.view3d_geom_cache.tris.len() * 21);
+    pack_tris(&state.view3d_geom_cache.tris, &mut static_verts);
+
+    // Sprites depend on camera yaw, so they're rebuilt + repacked per frame.
     let mut sprites: Vec<Tri3D> = Vec::new();
     build_thing_sprites(map, &state.thing_filter, &cam, &mut sprites);
-    let mut projected = project_and_sort(
-        &state.view3d_geom_cache.tris,
-        &sprites,
-        &cam,
-        available,
-        fov_y,
-    );
+    let mut dynamic_verts: Vec<f32> = Vec::with_capacity(sprites.len() * 21);
+    pack_tris(&sprites, &mut dynamic_verts);
 
-    // Painter's algorithm: farthest first. While painting we also track the
-    // nearest triangle covering a click point — projected is far→near, so the
-    // last covering triangle we walk past is the topmost one at that pixel.
-    let click_pos = if response.clicked_by(egui::PointerButton::Primary) {
-        response.interact_pointer_pos()
-    } else {
-        None
+    let aspect = (available.width() / available.height().max(1.0)).max(0.01);
+    let view_proj = build_view_proj(&cam, fov_y, aspect);
+
+    // Hand off to the GL renderer via egui_glow's PaintCallback.
+    let cb_data = CallbackData {
+        renderer: renderer.clone(),
+        view_proj,
+        static_verts,
+        static_fp: state.view3d_geom_cache.fingerprint,
+        dynamic_verts,
+        wall_verts: state.view3d_geom_cache.wall_verts.clone(),
+        wall_batches: state.view3d_geom_cache.wall_batches.clone(),
+        wall_uploads,
+        wall_fp: state.view3d_geom_cache.fingerprint,
     };
-    let mut topmost_hit: Option<Option<u32>> = None;
-    for tri in projected.drain(..) {
-        let pts = vec![tri.screen[0], tri.screen[1], tri.screen[2]];
-        if let Some(p) = click_pos {
-            if point_in_tri_pos(p, tri.screen[0], tri.screen[1], tri.screen[2]) {
-                topmost_hit = Some(tri.pick);
+    let callback = egui::PaintCallback {
+        rect: available,
+        callback: Arc::new(egui_glow::CallbackFn::new(move |info, painter| {
+            let vp = info.viewport_in_pixels();
+            let viewport = (vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px);
+            if let Ok(mut r) = cb_data.renderer.lock() {
+                r.render(
+                    painter.gl(),
+                    RenderInput {
+                        viewport,
+                        view_proj: cb_data.view_proj,
+                        static_verts: &cb_data.static_verts,
+                        static_fp: cb_data.static_fp,
+                        dynamic_verts: &cb_data.dynamic_verts,
+                        wall_verts: &cb_data.wall_verts,
+                        wall_batches: &cb_data.wall_batches,
+                        wall_uploads: &cb_data.wall_uploads,
+                        wall_fp: cb_data.wall_fp,
+                    },
+                );
             }
-        }
-        painter.add(egui::Shape::convex_polygon(pts, tri.color, Stroke::NONE));
-    }
+        })),
+    };
+    painter.add(egui::Shape::Callback(callback));
 
-    if let Some(hit) = topmost_hit {
-        handle_pick(state, hit);
-    }
-
+    // HUD overlay still uses the egui painter, drawn on top of the GL output.
     draw_hud(&painter, available);
-    // Continuous repaint while in 3D mode so movement is smooth.
     ui.ctx().request_repaint();
 }
 
-fn handle_pick(state: &mut EditorState, pick: Option<u32>) {
-    use super::state::SelectionMode;
-    match pick {
-        Some(thing_idx) => {
-            let idx = thing_idx as usize;
-            let Some(map) = state.map.as_ref() else { return };
-            let Some(t) = map.things.get(idx) else { return };
-            let type_no = t.thing_type;
-            state.mode = SelectionMode::Thing;
-            state.selection = vec![idx];
-            state.status_message = Some(format!(
-                "3D pick: thing #{idx} (type {type_no}) — Q to exit and edit"
-            ));
-        }
-        None => {
-            // Hit a wall/floor/ceiling — clear selection silently so the user
-            // sees feedback that the click was registered.
-            state.selection.clear();
+/// Captured by the PaintCallback closure. All fields owned, no borrows back
+/// into state, since the closure runs later in the egui paint pass.
+struct CallbackData {
+    renderer: Arc<Mutex<Renderer3D>>,
+    view_proj: [[f32; 4]; 4],
+    static_verts: Vec<f32>,
+    static_fp: u64,
+    dynamic_verts: Vec<f32>,
+    wall_verts: Vec<f32>,
+    wall_batches: Vec<super::view3d_gl::WallBatch>,
+    wall_uploads: Vec<WallUpload>,
+    wall_fp: u64,
+}
+
+/// Pack a Tri3D slice into the (x,y,z,r,g,b,a) float layout the renderer expects.
+fn pack_tris(tris: &[Tri3D], out: &mut Vec<f32>) {
+    for t in tris {
+        let r = t.color.r() as f32 / 255.0;
+        let g = t.color.g() as f32 / 255.0;
+        let b = t.color.b() as f32 / 255.0;
+        let a = t.color.a() as f32 / 255.0;
+        for v in [t.a, t.b, t.c] {
+            out.push(v[0]);
+            out.push(v[1]);
+            out.push(v[2]);
+            out.push(r);
+            out.push(g);
+            out.push(b);
+            out.push(a);
         }
     }
 }
 
-fn point_in_tri_pos(p: Pos2, a: Pos2, b: Pos2, c: Pos2) -> bool {
-    let d1 = (p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x);
-    let d2 = (p.x - b.x) * (c.y - b.y) - (p.y - b.y) * (c.x - b.x);
-    let d3 = (p.x - c.x) * (a.y - c.y) - (p.y - c.y) * (a.x - c.x);
-    let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
-    let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
-    !(has_neg && has_pos)
+/// Build a column-major OpenGL view-projection matrix for the current camera
+/// pose and FOV. Maps world (X east, Y north, Z up) into clip space with the
+/// usual GL conventions (camera looks down -Z, +Y screen up, depth in [-1, 1]).
+fn build_view_proj(cam: &Cam3D, fov_y: f32, aspect: f32) -> [[f32; 4]; 4] {
+    let (sy, cy_) = cam.yaw.sin_cos();
+    let (sp, cp) = cam.pitch.sin_cos();
+    let forward = [sy * cp, cy_ * cp, sp];
+    let right = [cy_, -sy, 0.0];
+    let up = [
+        right[1] * forward[2] - right[2] * forward[1],
+        right[2] * forward[0] - right[0] * forward[2],
+        right[0] * forward[1] - right[1] * forward[0],
+    ];
+    let eye = [cam.x, cam.y, cam.z];
+    let dot_re = right[0] * eye[0] + right[1] * eye[1] + right[2] * eye[2];
+    let dot_ue = up[0] * eye[0] + up[1] * eye[1] + up[2] * eye[2];
+    let dot_fe = forward[0] * eye[0] + forward[1] * eye[1] + forward[2] * eye[2];
+    let view: [[f32; 4]; 4] = [
+        [right[0], up[0], -forward[0], 0.0],
+        [right[1], up[1], -forward[1], 0.0],
+        [right[2], up[2], -forward[2], 0.0],
+        [-dot_re, -dot_ue, dot_fe, 1.0],
+    ];
+    let near = NEAR;
+    let far = 16384.0;
+    let fy_inv = 1.0 / (fov_y * 0.5).tan();
+    let fx_inv = fy_inv / aspect;
+    let a = (far + near) / (near - far);
+    let b = (2.0 * far * near) / (near - far);
+    let proj: [[f32; 4]; 4] = [
+        [fx_inv, 0.0, 0.0, 0.0],
+        [0.0, fy_inv, 0.0, 0.0],
+        [0.0, 0.0, a, -1.0],
+        [0.0, 0.0, b, 0.0],
+    ];
+    mat4_mul(proj, view)
+}
+
+fn mat4_mul(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut r = [[0.0_f32; 4]; 4];
+    for c in 0..4 {
+        for row in 0..4 {
+            r[c][row] = a[0][row] * b[c][0]
+                + a[1][row] * b[c][1]
+                + a[2][row] * b[c][2]
+                + a[3][row] * b[c][3];
+        }
+    }
+    r
 }
 
 fn initial_camera(state: &EditorState) -> Cam3D {
@@ -216,23 +318,37 @@ pub struct Tri3D {
     pick: Option<u32>,
 }
 
-/// Cache of map-derived geometry (walls + floor/ceiling fills). Keyed by a
-/// coarse fingerprint of the map data so it auto-rebuilds on edits.
+/// Cache of map-derived geometry. Keyed by a coarse fingerprint of the map
+/// data so it auto-rebuilds on edits. After Phase 2.0c, all static surfaces
+/// (walls + floors + ceilings) flow through the textured wall shader.
 #[derive(Clone, Default)]
 pub struct GeometryCache {
     fingerprint: u64,
+    /// Reserved for any future flat-shaded static fallback (currently unused).
     tris: Vec<Tri3D>,
+    /// Packed textured vertex stream: (x, y, z, u_px, v_px, brightness) per vertex.
+    pub wall_verts: Vec<f32>,
+    /// Per-texture draw groups within `wall_verts`.
+    pub wall_batches: Vec<super::view3d_gl::WallBatch>,
+    /// Textures referenced by `wall_batches`, parallel-indexed. The kind
+    /// dictates which TextureBank decoder to call.
+    pub wall_tex_names: Vec<(TextureKind, String)>,
+    /// Texture IDs (= hash of (kind, name)) already uploaded to the renderer.
+    /// Cleared whenever the cache is invalidated to force re-uploads.
+    pub uploaded_textures: std::collections::HashSet<u64>,
 }
 
-struct ProjectedTri {
-    screen: [Pos2; 3],
-    depth: f32,
-    color: Color32,
-    pick: Option<u32>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureKind {
+    Wall,
+    Flat,
 }
 
-fn build_walls(map: &MapData) -> Vec<Tri3D> {
-    let mut out: Vec<Tri3D> = Vec::with_capacity(map.linedefs.len() * 4);
+type TexBatchMap = std::collections::HashMap<(TextureKind, String), Vec<f32>>;
+
+/// Build textured wall geometry into the shared (kind, name) batch map.
+fn build_wall_batches_into(map: &MapData, by_tex: &mut TexBatchMap) {
+
     for ld in &map.linedefs {
         let (Some(a), Some(b)) = (
             map.vertices.get(ld.start_vertex as usize),
@@ -242,197 +358,201 @@ fn build_walls(map: &MapData) -> Vec<Tri3D> {
         let ay = a.y as f32;
         let bx = b.x as f32;
         let by = b.y as f32;
+        let length = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
 
-        let front_sec = sidedef_sector(map, ld.front_sidedef);
-        let back_sec = sidedef_sector(map, ld.back_sidedef);
+        let front_sd = sidedef_for_idx(map, ld.front_sidedef);
+        let back_sd = sidedef_for_idx(map, ld.back_sidedef);
+        let front_sec = front_sd.and_then(|sd| map.sectors.get(sd.sector as usize));
+        let back_sec = back_sd.and_then(|sd| map.sectors.get(sd.sector as usize));
 
-        match (front_sec, back_sec) {
-            (Some(fi), None) => {
-                let s = &map.sectors[fi];
-                push_quad(
-                    &mut out,
+        let lower_unpegged = (ld.flags & LineDef::FLAG_LOWER_UNPEGGED) != 0;
+        let upper_unpegged = (ld.flags & LineDef::FLAG_UPPER_UNPEGGED) != 0;
+
+        match (front_sd, back_sd, front_sec, back_sec) {
+            (Some(sd), None, Some(s), None) => {
+                let z_lo = s.floor_height as f32;
+                let z_hi = s.ceiling_height as f32;
+                // Solid wall: default pegs the texture's TOP at the wall top.
+                // LOWER_UNPEGGED pegs it at the wall bottom (texture grows up).
+                let v_anchor = if lower_unpegged { z_lo } else { z_hi };
+                push_textured_quad(
+                    by_tex,
+                    &sd.middle_texture,
                     ax, ay, bx, by,
-                    s.floor_height as f32, s.ceiling_height as f32,
-                    wall_color(s.light_level, WallKind::Solid),
+                    z_lo, z_hi,
+                    sd.x_offset as f32, sd.y_offset as f32, length, s.light_level,
+                    v_anchor,
                 );
             }
-            (None, Some(bi)) => {
-                let s = &map.sectors[bi];
-                push_quad(
-                    &mut out,
-                    bx, by, ax, ay, // reverse orientation since this side is the back
-                    s.floor_height as f32, s.ceiling_height as f32,
-                    wall_color(s.light_level, WallKind::Solid),
+            (None, Some(sd), None, Some(s)) => {
+                let z_lo = s.floor_height as f32;
+                let z_hi = s.ceiling_height as f32;
+                let v_anchor = if lower_unpegged { z_lo } else { z_hi };
+                push_textured_quad(
+                    by_tex,
+                    &sd.middle_texture,
+                    bx, by, ax, ay,
+                    z_lo, z_hi,
+                    sd.x_offset as f32, sd.y_offset as f32, length, s.light_level,
+                    v_anchor,
                 );
             }
-            (Some(fi), Some(bi)) => {
-                let f = &map.sectors[fi];
-                let b = &map.sectors[bi];
-                let lower_top = f.floor_height.max(b.floor_height) as f32;
-                let lower_bot = f.floor_height.min(b.floor_height) as f32;
-                let upper_top = f.ceiling_height.max(b.ceiling_height) as f32;
-                let upper_bot = f.ceiling_height.min(b.ceiling_height) as f32;
-                // Lower step is visible from whichever side has the LOWER floor.
-                // Wind so the wall normal points into that visible side.
+            (Some(fsd), Some(bsd), Some(f), Some(bs)) => {
+                let lower_top = f.floor_height.max(bs.floor_height) as f32;
+                let lower_bot = f.floor_height.min(bs.floor_height) as f32;
+                let upper_top = f.ceiling_height.max(bs.ceiling_height) as f32;
+                let upper_bot = f.ceiling_height.min(bs.ceiling_height) as f32;
+
                 if lower_top > lower_bot {
-                    let face_front = b.floor_height >= f.floor_height;
-                    let light = if face_front { f.light_level } else { b.light_level };
+                    let face_front = bs.floor_height >= f.floor_height;
+                    let (sd, sec, light) = if face_front {
+                        (fsd, f, f.light_level)
+                    } else {
+                        (bsd, bs, bs.light_level)
+                    };
                     let (x1, y1, x2, y2) = if face_front { (ax, ay, bx, by) } else { (bx, by, ax, ay) };
-                    push_quad(
-                        &mut out,
+                    // Lower step: default pegs at the step's TOP. LOWER_UNPEGGED
+                    // pegs at the front (visible-side) sector's CEILING — this
+                    // is the "stairs look continuous" trick.
+                    let v_anchor = if lower_unpegged {
+                        sec.ceiling_height as f32
+                    } else {
+                        lower_top
+                    };
+                    push_textured_quad(
+                        by_tex,
+                        &sd.lower_texture,
                         x1, y1, x2, y2,
                         lower_bot, lower_top,
-                        wall_color(light, WallKind::Lower),
+                        sd.x_offset as f32, sd.y_offset as f32, length, light,
+                        v_anchor,
                     );
                 }
-                // Upper step is visible from whichever side has the HIGHER ceiling.
                 if upper_top > upper_bot {
-                    let face_front = f.ceiling_height >= b.ceiling_height;
-                    let light = if face_front { f.light_level } else { b.light_level };
+                    let face_front = f.ceiling_height >= bs.ceiling_height;
+                    let (sd, light) = if face_front {
+                        (fsd, f.light_level)
+                    } else {
+                        (bsd, bs.light_level)
+                    };
                     let (x1, y1, x2, y2) = if face_front { (ax, ay, bx, by) } else { (bx, by, ax, ay) };
-                    push_quad(
-                        &mut out,
+                    // Upper step: default pegs at the BOTTOM of the wall (so
+                    // the texture's bottom row aligns with the lower ceiling).
+                    // UPPER_UNPEGGED pegs at the wall TOP instead.
+                    let v_anchor = if upper_unpegged { upper_top } else { upper_bot };
+                    push_textured_quad(
+                        by_tex,
+                        &sd.upper_texture,
                         x1, y1, x2, y2,
                         upper_bot, upper_top,
-                        wall_color(light, WallKind::Upper),
+                        sd.x_offset as f32, sd.y_offset as f32, length, light,
+                        v_anchor,
                     );
                 }
+                // Two-sided middle textures (railings/grates) deferred — needs
+                // alpha sort, not worth the complexity for Phase 2.0b.
             }
-            (None, None) => {}
+            _ => {}
         }
     }
-    out
 }
 
-fn push_quad(
-    out: &mut Vec<Tri3D>,
+/// Flatten a (kind, name) → vertex buffer map into the renderer's wall batch
+/// format: a single packed vertex stream + per-batch metadata + parallel name list.
+fn flatten_batches(
+    by_tex: TexBatchMap,
+) -> (Vec<f32>, Vec<super::view3d_gl::WallBatch>, Vec<(TextureKind, String)>) {
+    let mut verts: Vec<f32> = Vec::new();
+    let mut batches: Vec<super::view3d_gl::WallBatch> = Vec::new();
+    let mut names: Vec<(TextureKind, String)> = Vec::new();
+    for ((kind, name), vs) in by_tex {
+        if vs.is_empty() {
+            continue;
+        }
+        let id = texture_name_id(kind, &name);
+        let vertex_offset = (verts.len() / 6) as i32;
+        let vertex_count = (vs.len() / 6) as i32;
+        verts.extend(vs);
+        batches.push(super::view3d_gl::WallBatch { texture_id: id, vertex_offset, vertex_count });
+        names.push((kind, name));
+    }
+    (verts, batches, names)
+}
+
+/// Append two CCW triangles for a wall quad with per-vertex pixel UVs and brightness.
+/// Skips outright if the texture is empty / "-" (DOOM's "no texture" sentinel).
+///
+/// `v_anchor` is the world-Z that maps to V = y_off (V increases downward as
+/// we descend the wall). Choosing this per surface type implements DOOM's
+/// LOWER_UNPEGGED / UPPER_UNPEGGED pegging flags: stairs become continuous
+/// when their lower walls all anchor to the shared sector ceiling, etc.
+#[allow(clippy::too_many_arguments)]
+fn push_textured_quad(
+    by_tex: &mut TexBatchMap,
+    tex_name: &str,
     x1: f32, y1: f32, x2: f32, y2: f32,
     z_lo: f32, z_hi: f32,
-    color: Color32,
+    x_off: f32, y_off: f32,
+    length: f32,
+    light_level: i16,
+    v_anchor: f32,
 ) {
-    let p00 = [x1, y1, z_lo];
-    let p10 = [x2, y2, z_lo];
-    let p11 = [x2, y2, z_hi];
-    let p01 = [x1, y1, z_hi];
-    out.push(Tri3D { a: p00, b: p10, c: p11, color, pick: None });
-    out.push(Tri3D { a: p00, b: p11, c: p01, color, pick: None });
-}
+    if tex_name.is_empty() || tex_name == "-" {
+        return;
+    }
+    let brightness = (light_level.clamp(0, 255) as f32 / 255.0).max(0.12);
+    let u0 = x_off;
+    let u1 = x_off + length;
+    // V at world height z = (v_anchor - z) + y_off. Negative values are fine —
+    // GL_REPEAT wraps them transparently in the shader.
+    let v_top = (v_anchor - z_hi) + y_off;
+    let v_bot = (v_anchor - z_lo) + y_off;
 
-#[derive(Clone, Copy)]
-enum WallKind {
-    Solid,
-    Upper,
-    Lower,
-}
-
-fn wall_color(light: i16, kind: WallKind) -> Color32 {
-    let brightness = (light.clamp(0, 255) as f32 / 255.0).max(0.12);
-    let (r, g, b) = match kind {
-        WallKind::Solid => (180.0, 180.0, 180.0),
-        WallKind::Upper => (160.0, 170.0, 200.0),
-        WallKind::Lower => (200.0, 170.0, 140.0),
+    let entry = by_tex.entry((TextureKind::Wall, tex_name.to_string())).or_default();
+    let mut push_v = |x: f32, y: f32, z: f32, u: f32, v: f32| {
+        entry.push(x);
+        entry.push(y);
+        entry.push(z);
+        entry.push(u);
+        entry.push(v);
+        entry.push(brightness);
     };
-    Color32::from_rgb(
-        (r * brightness) as u8,
-        (g * brightness) as u8,
-        (b * brightness) as u8,
-    )
+    // Triangle 1: p00, p10, p11
+    push_v(x1, y1, z_lo, u0, v_bot);
+    push_v(x2, y2, z_lo, u1, v_bot);
+    push_v(x2, y2, z_hi, u1, v_top);
+    // Triangle 2: p00, p11, p01
+    push_v(x1, y1, z_lo, u0, v_bot);
+    push_v(x2, y2, z_hi, u1, v_top);
+    push_v(x1, y1, z_hi, u0, v_top);
 }
 
-fn sidedef_sector(map: &MapData, sd_idx: u16) -> Option<usize> {
+/// Stable in-process hash of a (kind, name) pair for use as the renderer
+/// cache key. Kind is part of the hash so a wall texture and a flat with the
+/// same name don't collide on the GL side.
+pub fn texture_name_id(kind: TextureKind, name: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    match kind {
+        TextureKind::Wall => "W:".hash(&mut h),
+        TextureKind::Flat => "F:".hash(&mut h),
+    }
+    name.to_ascii_uppercase().hash(&mut h);
+    h.finish()
+}
+
+fn sidedef_for_idx(map: &MapData, sd_idx: u16) -> Option<&crate::wad::SideDef> {
     if sd_idx == LineDef::NO_SIDEDEF {
         return None;
     }
-    let sd = map.sidedefs.get(sd_idx as usize)?;
+    map.sidedefs.get(sd_idx as usize)
+}
+
+fn sidedef_sector(map: &MapData, sd_idx: u16) -> Option<usize> {
+    let sd = sidedef_for_idx(map, sd_idx)?;
     let i = sd.sector as usize;
     if i < map.sectors.len() { Some(i) } else { None }
-}
-
-fn project_and_sort(
-    static_tris: &[Tri3D],
-    dynamic_tris: &[Tri3D],
-    cam: &Cam3D,
-    screen: egui::Rect,
-    fov_y: f32,
-) -> Vec<ProjectedTri> {
-    let (sin_y, cos_y) = cam.yaw.sin_cos();
-    let (sin_p, cos_p) = cam.pitch.sin_cos();
-    let half_w = screen.width() * 0.5;
-    let half_h = screen.height() * 0.5;
-    let focal = half_h / (fov_y * 0.5).tan();
-    let cx = screen.center().x;
-    let cy = screen.center().y;
-
-    let mut out: Vec<ProjectedTri> = Vec::with_capacity(static_tris.len() + dynamic_tris.len());
-    let to_cam = |p: [f32; 3]| -> [f32; 3] {
-        // Translate to camera origin
-        let dx = p[0] - cam.x;
-        let dy = p[1] - cam.y;
-        let dz = p[2] - cam.z;
-        // Yaw: rotate world around Z so camera-forward aligns with +Y axis
-        let rx = dx * cos_y - dy * sin_y;
-        let ry = dx * sin_y + dy * cos_y;
-        // Pitch: rotate around camera-right (X) so looking up tilts +Y down toward +Z
-        let ry2 = ry * cos_p + dz * sin_p;
-        let rz2 = -ry * sin_p + dz * cos_p;
-        [rx, ry2, rz2]
-    };
-
-    let project = |p: [f32; 3]| -> Pos2 {
-        let sx = (p[0] / p[1]) * focal + cx;
-        let sy = -(p[2] / p[1]) * focal + cy;
-        egui::pos2(sx, sy)
-    };
-    let mut emit = |a: [f32; 3], b: [f32; 3], c: [f32; 3], color: Color32, pick: Option<u32>| {
-        let pa = project(a);
-        let pb = project(b);
-        let pc = project(c);
-        let bbox = bounding(&[pa, pb, pc]);
-        if !bbox.intersects(screen) {
-            return;
-        }
-        let depth = (a[1] + b[1] + c[1]) / 3.0;
-        out.push(ProjectedTri { screen: [pa, pb, pc], depth, color, pick });
-    };
-
-    // Cull triangles whose CCW normal points away from the camera. Backfaces
-    // cost roughly half the world geometry on every frame; dropping them here
-    // is the single biggest speedup before clipping/projection.
-    let visible = |a: [f32; 3], b: [f32; 3], c: [f32; 3]| -> bool {
-        let nx = (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]);
-        let ny = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
-        let nz = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
-        // Front-facing if normal points toward camera origin (dot(n, a) < 0).
-        nx * a[0] + ny * a[1] + nz * a[2] < 0.0
-    };
-
-    for slice in [static_tris, dynamic_tris] {
-        for t in slice {
-            let ca = to_cam(t.a);
-            let cb = to_cam(t.b);
-            let cc = to_cam(t.c);
-            if !visible(ca, cb, cc) {
-                continue;
-            }
-            clip_near_and_emit(ca, cb, cc, t.color, t.pick, &mut emit);
-        }
-    }
-    let _ = half_w;
-    // Far-to-near so painter overdraws correctly.
-    out.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
-    out
-}
-
-fn bounding(pts: &[Pos2]) -> egui::Rect {
-    let mut min = pts[0];
-    let mut max = pts[0];
-    for p in pts.iter().skip(1) {
-        min.x = min.x.min(p.x);
-        min.y = min.y.min(p.y);
-        max.x = max.x.max(p.x);
-        max.y = max.y.max(p.y);
-    }
-    egui::Rect::from_min_max(min, max)
 }
 
 fn map_centroid(map: &MapData) -> (f32, f32) {
@@ -479,13 +599,21 @@ fn draw_hud(painter: &egui::Painter, rect: egui::Rect) {
 /// Rebuild the cached static geometry if the map fingerprint has changed.
 fn ensure_geometry_cache(map: &MapData, cache: &mut GeometryCache) {
     let fp = map_fingerprint(map);
-    if cache.fingerprint == fp && !cache.tris.is_empty() {
+    if cache.fingerprint == fp && !cache.wall_verts.is_empty() {
         return;
     }
-    let mut tris = build_walls(map);
-    build_floors_ceilings(map, &mut tris);
+    let mut by_tex: TexBatchMap = std::collections::HashMap::new();
+    build_wall_batches_into(map, &mut by_tex);
+    build_floors_ceilings_into(map, &mut by_tex);
+    let (wall_verts, wall_batches, wall_tex_names) = flatten_batches(by_tex);
     cache.fingerprint = fp;
-    cache.tris = tris;
+    cache.tris.clear();
+    cache.wall_verts = wall_verts;
+    cache.wall_batches = wall_batches;
+    cache.wall_tex_names = wall_tex_names;
+    // Renderer dedupes by id, so we re-send all referenced textures and let
+    // it skip the ones already cached.
+    cache.uploaded_textures.clear();
 }
 
 /// Cheap fingerprint that catches every edit we care about (vertex move,
@@ -524,73 +652,7 @@ fn map_fingerprint(map: &MapData) -> u64 {
     h
 }
 
-// ---------------------------------------------------------------------------
-// Phase 1.5b: near-plane clipping
-// ---------------------------------------------------------------------------
-
-/// Clip a triangle against the near plane (cam-space y = NEAR) and emit the
-/// resulting in-front triangles via `emit`. Preserves winding.
-fn clip_near_and_emit<F>(
-    a: [f32; 3],
-    b: [f32; 3],
-    c: [f32; 3],
-    color: Color32,
-    pick: Option<u32>,
-    emit: &mut F,
-)
-where
-    F: FnMut([f32; 3], [f32; 3], [f32; 3], Color32, Option<u32>),
-{
-    let ya = a[1] >= NEAR;
-    let yb = b[1] >= NEAR;
-    let yc = c[1] >= NEAR;
-    let n_in = (ya as u8) + (yb as u8) + (yc as u8);
-    match n_in {
-        0 => {}
-        3 => emit(a, b, c, color, pick),
-        1 => {
-            let (p, q, r) = if ya {
-                (a, b, c)
-            } else if yb {
-                (b, c, a)
-            } else {
-                (c, a, b)
-            };
-            let pq = lerp_to_near(p, q);
-            let rp = lerp_to_near(r, p);
-            emit(p, pq, rp, color, pick);
-        }
-        2 => {
-            let (p, q, r) = if !ya {
-                (a, b, c)
-            } else if !yb {
-                (b, c, a)
-            } else {
-                (c, a, b)
-            };
-            let pq = lerp_to_near(p, q);
-            let rp = lerp_to_near(r, p);
-            emit(pq, q, r, color, pick);
-            emit(pq, r, rp, color, pick);
-        }
-        _ => unreachable!(),
-    }
-}
-
-fn lerp_to_near(behind: [f32; 3], front: [f32; 3]) -> [f32; 3] {
-    // Solve for t where behind + t*(front - behind) has y == NEAR.
-    let denom = front[1] - behind[1];
-    let t = if denom.abs() < 1.0e-6 {
-        0.0
-    } else {
-        ((NEAR - behind[1]) / denom).clamp(0.0, 1.0)
-    };
-    [
-        behind[0] + t * (front[0] - behind[0]),
-        NEAR,
-        behind[2] + t * (front[2] - behind[2]),
-    ]
-}
+// (Phase 1.5b near-plane CPU clipper removed — GL handles it via NEAR plane in projection.)
 
 // ---------------------------------------------------------------------------
 // Phase 1.5a: floor + ceiling triangulation
@@ -598,8 +660,9 @@ fn lerp_to_near(behind: [f32; 3], front: [f32; 3]) -> [f32; 3] {
 
 /// For every sector, walk its boundary edges into closed loops, classify
 /// outer rings vs holes, splice holes into their containing outer using a
-/// rightmost-vertex bridge, then ear-clip and emit floor + ceiling triangles.
-fn build_floors_ceilings(map: &MapData, out: &mut Vec<Tri3D>) {
+/// rightmost-vertex bridge, then ear-clip and emit floor + ceiling triangles
+/// as textured batches keyed by the sector's FLAT names.
+fn build_floors_ceilings_into(map: &MapData, by_tex: &mut TexBatchMap) {
     // DOOM convention: the front sidedef sits on the RIGHT of edge start→end.
     // To walk each sector's boundary CCW (sector on the LEFT of every walking
     // edge, so signed_area > 0 marks outer rings), we reverse the front-edge
@@ -621,8 +684,15 @@ fn build_floors_ceilings(map: &MapData, out: &mut Vec<Tri3D>) {
         let sector = &map.sectors[sector_idx];
         let floor_h = sector.floor_height as f32;
         let ceil_h = sector.ceiling_height as f32;
-        let f_color = floor_color(sector.light_level);
-        let c_color = ceiling_color(sector.light_level);
+        let brightness = (sector.light_level.clamp(0, 255) as f32 / 255.0).max(0.12);
+        // Skip sectors with no FLAT name on either face (sentinel "-" / empty).
+        let floor_tex = sector.floor_texture.clone();
+        let ceil_tex = sector.ceiling_texture.clone();
+        let want_floor = !floor_tex.is_empty() && floor_tex != "-";
+        let want_ceil = !ceil_tex.is_empty() && ceil_tex != "-";
+        if !want_floor && !want_ceil {
+            continue;
+        }
 
         // Materialize each closed boundary loop as a Vec<(x, y)>, dropping any
         // dangling vertex indices. A loop is "outer" (CCW after walk_loops) or
@@ -692,22 +762,28 @@ fn build_floors_ceilings(map: &MapData, out: &mut Vec<Tri3D>) {
             }
 
             let triangles = ear_clip(&outer);
-            for [i0, i1, i2] in triangles {
-                let (a, b, c) = (outer[i0], outer[i1], outer[i2]);
-                out.push(Tri3D {
-                    a: [a.0, a.1, floor_h],
-                    b: [b.0, b.1, floor_h],
-                    c: [c.0, c.1, floor_h],
-                    color: f_color,
-                    pick: None,
-                });
-                out.push(Tri3D {
-                    a: [a.0, a.1, ceil_h],
-                    b: [c.0, c.1, ceil_h],
-                    c: [b.0, b.1, ceil_h],
-                    color: c_color,
-                    pick: None,
-                });
+            // FLAT textures are world-aligned 64×64 — UV at world (x, y) is
+            // just (x, y) in pixel space; the wall shader normalizes by texture
+            // size (64) and GL_REPEAT tiles across the floor.
+            if want_floor {
+                let entry = by_tex
+                    .entry((TextureKind::Flat, floor_tex.clone()))
+                    .or_default();
+                for &[i0, i1, i2] in &triangles {
+                    let (a, b, c) = (outer[i0], outer[i1], outer[i2]);
+                    // Floor: CCW from above, normal up.
+                    push_flat_triangle(entry, a, b, c, floor_h, brightness);
+                }
+            }
+            if want_ceil {
+                let entry = by_tex
+                    .entry((TextureKind::Flat, ceil_tex.clone()))
+                    .or_default();
+                for &[i0, i1, i2] in &triangles {
+                    let (a, b, c) = (outer[i0], outer[i1], outer[i2]);
+                    // Ceiling: reversed winding so normal points down.
+                    push_flat_triangle(entry, a, c, b, ceil_h, brightness);
+                }
             }
         }
     }
@@ -864,22 +940,25 @@ fn point_in_polygon(p: (f32, f32), poly: &[(f32, f32)]) -> bool {
     inside
 }
 
-fn floor_color(light: i16) -> Color32 {
-    let brightness = (light.clamp(0, 255) as f32 / 255.0).max(0.12);
-    Color32::from_rgb(
-        (140.0 * brightness) as u8,
-        (120.0 * brightness) as u8,
-        (95.0 * brightness) as u8,
-    )
-}
-
-fn ceiling_color(light: i16) -> Color32 {
-    let brightness = (light.clamp(0, 255) as f32 / 255.0).max(0.12);
-    Color32::from_rgb(
-        (95.0 * brightness) as u8,
-        (105.0 * brightness) as u8,
-        (130.0 * brightness) as u8,
-    )
+/// Push one floor/ceiling triangle into the textured batch buffer.
+/// UV at world (x, y) is just (x, y) — DOOM FLATs are 64×64 world-aligned,
+/// and the wall shader normalizes by the bound texture's size.
+fn push_flat_triangle(
+    out: &mut Vec<f32>,
+    a: (f32, f32),
+    b: (f32, f32),
+    c: (f32, f32),
+    z: f32,
+    brightness: f32,
+) {
+    for (x, y) in [a, b, c] {
+        out.push(x);
+        out.push(y);
+        out.push(z);
+        out.push(x); // u_px
+        out.push(y); // v_px
+        out.push(brightness);
+    }
 }
 
 /// Greedy chain-walker: pull edges into closed loops by matching tail→head.

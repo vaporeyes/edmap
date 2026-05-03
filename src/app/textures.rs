@@ -90,6 +90,44 @@ impl TextureBank {
         self.handles.get(&key)
     }
 
+    /// Decode a flat (floor/ceiling) lump to raw RGBA8 pixel data.
+    /// FLATs are always 64×64; returns (64, 64, bytes) on success.
+    pub fn flat_rgba(&self, wad: &Wad, name: &str) -> Option<(u32, u32, Vec<u8>)> {
+        let palette = self.palette.as_ref()?;
+        let bytes = wad.lump_bytes_by_name(name)?;
+        let flat = Flat::parse(bytes).ok()?;
+        let mut out = Vec::with_capacity(FLAT_DIM * FLAT_DIM * 4);
+        for &idx in &flat.pixels {
+            let [r, g, b] = palette.0.get(idx as usize).copied().unwrap_or([0, 0, 0]);
+            out.extend_from_slice(&[r, g, b, 255]);
+        }
+        Some((FLAT_DIM as u32, FLAT_DIM as u32, out))
+    }
+
+    /// Decode a wall texture to raw RGBA8 pixel data (for the 3D GL renderer).
+    /// Bypasses the egui handle cache entirely — caller is responsible for
+    /// uploading the bytes to GL and caching the result on its side.
+    pub fn wall_rgba(&self, wad: &Wad, name: &str) -> Option<(u32, u32, Vec<u8>)> {
+        let palette = self.palette.as_ref()?;
+        let def = self.walls.iter().find(|d| d.name == name)?;
+        let img = TextureImage::compose(def, &self.pnames, |patch_name| {
+            wad.lump_bytes_by_name(patch_name).and_then(|b| Patch::parse(b).ok())
+        });
+        let w = img.width as u32;
+        let h = img.height as u32;
+        let mut bytes = Vec::with_capacity((w as usize) * (h as usize) * 4);
+        for &p in &img.pixels {
+            match p {
+                Some(idx) => {
+                    let [r, g, b] = palette.0.get(idx as usize).copied().unwrap_or([0, 0, 0]);
+                    bytes.extend_from_slice(&[r, g, b, 255]);
+                }
+                None => bytes.extend_from_slice(&[0, 0, 0, 0]),
+            }
+        }
+        Some((w, h, bytes))
+    }
+
     pub fn sprite(&mut self, ctx: &egui::Context, wad: &Wad, name: &str) -> Option<&TextureHandle> {
         // Sprites are stored as patches between S_START..S_END.
         let key = format!("S:{name}");

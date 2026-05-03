@@ -18,6 +18,7 @@ mod state;
 mod textures;
 mod things_table;
 mod view3d;
+mod view3d_gl;
 mod viewer;
 mod viewport;
 
@@ -33,6 +34,10 @@ pub struct EdMapApp {
     bank: TextureBank,
     bank_for_path: Option<std::path::PathBuf>,
     mem_probe: mem_probe::MemProbe,
+    /// Lazily-initialized GL renderer for Phase 2 3D view. Behind Arc<Mutex<>>
+    /// so it can be cloned into the egui_glow PaintCallback closure (which
+    /// requires Send + Sync + 'static).
+    view3d_gl: std::sync::Arc<std::sync::Mutex<view3d_gl::Renderer3D>>,
 }
 
 impl EdMapApp {
@@ -44,6 +49,7 @@ impl EdMapApp {
             bank: TextureBank::default(),
             bank_for_path: None,
             mem_probe: mem_probe::MemProbe::new(),
+            view3d_gl: std::sync::Arc::new(std::sync::Mutex::new(view3d_gl::Renderer3D::new())),
         }
     }
 
@@ -80,7 +86,7 @@ impl eframe::App for EdMapApp {
             .frame(egui::Frame::none().fill(theme::VIEWPORT_BG))
             .show(ctx, |ui| {
                 if self.state.view3d_open {
-                    view3d::draw(ui, &mut self.state);
+                    view3d::draw(ui, &mut self.state, &self.bank, self.view3d_gl.clone());
                 } else {
                     viewport::draw(ui, &mut self.state, &mut self.bank);
                 }

@@ -3314,3 +3314,157 @@ fn ensure_sector_dialog_for_pick(state: &mut EditorState) -> bool {
     });
     true
 }
+
+
+// ---------------------------------------------------------------------------
+// Tag-line-to-sector tool (matches the original EdMap F7 workflow)
+// ---------------------------------------------------------------------------
+
+/// Initiate the two-step tag tool. Requires LineDef mode with a single
+/// linedef selected; the next viewport click will pick the target sector.
+pub fn begin_tag_link(state: &mut EditorState) {
+    use super::state::SelectionMode;
+    if state.mode != SelectionMode::LineDef {
+        state.status_message = Some("Tag line to sector: switch to LineDef mode and select a line first".into());
+        return;
+    }
+    if state.selection.len() != 1 {
+        state.status_message = Some("Tag line to sector: select exactly one linedef".into());
+        return;
+    }
+    let ld_idx = state.selection[0];
+    state.tag_link_pending = Some(ld_idx);
+    state.status_message = Some(format!("Tag tool: click a sector to tag with LineDef #{ld_idx}"));
+}
+
+/// Complete the two-step tag tool: assign a shared tag value to the linedef
+/// and the picked sector. Reuses an existing tag if either side already has
+/// one, otherwise allocates the smallest unused positive tag.
+pub fn finish_tag_link(state: &mut EditorState, sector_idx: usize) {
+    let Some(ld_idx) = state.tag_link_pending.take() else { return };
+    push_undo(state);
+    let Some(map) = state.map.as_mut() else {
+        state.status_message = Some("Tag tool: no map loaded".into());
+        return;
+    };
+    let Some(ld) = map.linedefs.get(ld_idx) else {
+        state.status_message = Some("Tag tool: linedef no longer exists".into());
+        return;
+    };
+    let Some(sec) = map.sectors.get(sector_idx) else {
+        state.status_message = Some("Tag tool: sector no longer exists".into());
+        return;
+    };
+
+    // Pick a tag: prefer the linedefs current tag, then the sectors, else allocate.
+    let tag = if ld.sector_tag != 0 {
+        ld.sector_tag
+    } else if sec.tag != 0 {
+        sec.tag
+    } else {
+        next_unused_tag(map)
+    };
+    map.linedefs[ld_idx].sector_tag = tag;
+    map.sectors[sector_idx].tag = tag;
+    state.is_dirty = true;
+    state.status_message = Some(format!(
+        "Tagged LineDef #{ld_idx} <-> Sector #{sector_idx} (tag {tag})"
+    ));
+}
+
+
+/// "Enhance map" — combine the three single-purpose fixers into one button.
+/// Status message reports the combined counts. Each individual fixer pushes
+/// its own undo entry so the operation is reversible step-by-step.
+pub fn enhance_map(state: &mut EditorState) {
+    let zero = fix_zero_length_linedefs(state);
+    let missing = fix_missing_textures(state);
+    let unused = remove_unused_textures(state);
+    state.status_message = Some(format!(
+        "Enhance map: removed {zero} zero-length lines, filled {missing} missing tex, removed {unused} unused tex"
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Sector style clipboard: grab/apply tools (matches the original DOS EdMap
+// "Grab style" / "Texture style" workflow). Single-slot for now; named
+// multi-style storage can come later in a Preferences-backed dialog.
+// ---------------------------------------------------------------------------
+
+/// Capture the currently-selected sector's height/light/texture settings into
+/// `sector_style_clipboard`. Requires Sector mode with exactly one selection.
+pub fn grab_sector_style(state: &mut EditorState) {
+    use super::state::{SectorStyle, SelectionMode};
+    if state.mode != SelectionMode::Sector {
+        state.status_message = Some("Grab style: switch to Sector mode first".into());
+        return;
+    }
+    if state.selection.len() != 1 {
+        state.status_message = Some("Grab style: select exactly one sector".into());
+        return;
+    }
+    let sec_idx = state.selection[0];
+    let Some(map) = state.map.as_ref() else { return };
+    let Some(s) = map.sectors.get(sec_idx) else { return };
+    state.sector_style_clipboard = Some(SectorStyle {
+        floor_height: s.floor_height,
+        ceiling_height: s.ceiling_height,
+        floor_texture: s.floor_texture.clone(),
+        ceiling_texture: s.ceiling_texture.clone(),
+        light_level: s.light_level,
+        sector_type: s.sector_type,
+    });
+    state.status_message = Some(format!(
+        "Grabbed style from sector #{sec_idx} (floor {}, ceil {}, light {})",
+        s.floor_height, s.ceiling_height, s.light_level
+    ));
+}
+
+/// Apply only the floor/ceiling textures from the grabbed style to every
+/// selected sector. The original DOS "Texture style" command.
+pub fn apply_sector_style_textures(state: &mut EditorState) {
+    apply_sector_style(state, true, false);
+}
+
+/// Apply every field from the grabbed style (heights, textures, light, type)
+/// to every selected sector.
+pub fn apply_sector_style_all(state: &mut EditorState) {
+    apply_sector_style(state, true, true);
+}
+
+fn apply_sector_style(state: &mut EditorState, copy_textures: bool, copy_other: bool) {
+    use super::state::SelectionMode;
+    let Some(style) = state.sector_style_clipboard.clone() else {
+        state.status_message = Some("Apply style: nothing grabbed yet (use Grab style first)".into());
+        return;
+    };
+    if state.mode != SelectionMode::Sector || state.selection.is_empty() {
+        state.status_message = Some("Apply style: select sectors first".into());
+        return;
+    }
+    push_undo(state);
+    let targets = state.selection.clone();
+    let Some(map) = state.map.as_mut() else { return };
+    let mut applied = 0;
+    for &i in &targets {
+        let Some(s) = map.sectors.get_mut(i) else { continue };
+        if copy_textures {
+            s.floor_texture = style.floor_texture.clone();
+            s.ceiling_texture = style.ceiling_texture.clone();
+        }
+        if copy_other {
+            s.floor_height = style.floor_height;
+            s.ceiling_height = style.ceiling_height;
+            s.light_level = style.light_level;
+            s.sector_type = style.sector_type;
+        }
+        applied += 1;
+    }
+    if applied > 0 {
+        state.is_dirty = true;
+    }
+    state.status_message = Some(format!(
+        "Applied style to {applied} sector(s){}",
+        if copy_other { " (full)" } else { " (textures only)" }
+    ));
+}

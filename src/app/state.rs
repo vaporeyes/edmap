@@ -407,6 +407,24 @@ pub struct EditorState {
     /// Cached walls + floor/ceiling triangles for the 3D viewport. Rebuilt only
     /// when the map fingerprint changes; thing sprites are recomputed per-frame.
     pub view3d_geom_cache: super::view3d::GeometryCache,
+    /// Two-step "Tag line to sector" tool: when set, the next viewport click
+    /// is interpreted as a sector pick and tagged to the stored linedef index.
+    pub tag_link_pending: Option<usize>,
+    /// Single in-memory sector "style" clipboard — a snapshot of one sector's
+    /// height/light/texture settings that can be pasted onto other sectors.
+    pub sector_style_clipboard: Option<SectorStyle>,
+}
+
+/// Captured sector aesthetic for the Grab/Apply style tools. Tag is not part
+/// of a style (it's per-sector wiring).
+#[derive(Clone, Debug)]
+pub struct SectorStyle {
+    pub floor_height: i16,
+    pub ceiling_height: i16,
+    pub floor_texture: String,
+    pub ceiling_texture: String,
+    pub light_level: i16,
+    pub sector_type: u16,
 }
 
 impl Default for EditorState {
@@ -451,6 +469,8 @@ impl Default for EditorState {
             view3d_cam: None,
             view3d_capture: false,
             view3d_geom_cache: super::view3d::GeometryCache::default(),
+            tag_link_pending: None,
+            sector_style_clipboard: None,
         }
     }
 }

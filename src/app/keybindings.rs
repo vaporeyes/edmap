@@ -143,6 +143,9 @@ pub fn dispatch(ctx: &egui::Context, state: &mut EditorState) {
                 } else if state.line_draw.is_some() {
                     state.line_draw = None;
                     state.status_message = Some("Line-draw cancelled".into());
+                } else if state.tag_link_pending.is_some() {
+                    state.tag_link_pending = None;
+                    state.status_message = Some("Tag tool cancelled".into());
                 } else {
                     state.open_menu = None;
                     state.status_message = None;
