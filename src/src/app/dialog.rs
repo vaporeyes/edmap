@@ -657,40 +657,103 @@ fn open_map_body(
         ui.colored_label(theme::VGA_BRIGHT_RED, "No maps in this WAD.");
         return ok_button(ui, "OK");
     }
-    ui.colored_label(theme::MENU_FG, "Select a map:");
+
+    const COLS: usize = 3;
+    const CELL_W: f32 = 88.0;
+    const CELL_H: f32 = 22.0;
+    const CELL_GAP: f32 = 4.0;
+    const PAD: f32 = 10.0;
+
+    let dialog_width = COLS as f32 * CELL_W + (COLS as f32 - 1.0) * CELL_GAP + PAD * 2.0;
+
     let mut selected = selected.min(maps.len() - 1);
-    egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-        for (i, name) in maps.iter().enumerate() {
-            let is_active = i == selected;
-            let bg = if is_active { theme::MENU_HILITE_BG } else { theme::MENU_BG };
-            let fg = if is_active { theme::MENU_HILITE_FG } else { theme::MENU_FG };
-            let row = egui::Frame::none()
-                .fill(bg)
-                .inner_margin(egui::Margin::symmetric(6.0, 1.0))
-                .show(ui, |ui| ui.label(RichText::new(name).color(fg)))
-                .response
-                .interact(egui::Sense::click());
-            if row.clicked() {
-                selected = i;
+    let mut activated: Option<usize> = None;
+    let mut hovered: Option<usize> = None;
+    let wad_path_label = state
+        .wad_path
+        .as_ref()
+        .map(|p| {
+            let s = p.to_string_lossy();
+            // Mimic original: keep last two path components for context.
+            let parts: Vec<&str> = s.rsplit(['/', '\\']).take(2).collect();
+            if parts.len() == 2 {
+                format!("..\\{}\\{}", parts[1], parts[0])
+            } else {
+                s.into_owned()
             }
-            if row.double_clicked() {
-                load_selected_map(state, maps[i].clone());
-                return;
+        })
+        .unwrap_or_default();
+
+    egui::Frame::none()
+        .fill(theme::SIDEBAR_BG)
+        .inner_margin(egui::Margin::same(PAD))
+        .show(ui, |ui| {
+            ui.set_min_width(dialog_width - 4.0);
+            ui.spacing_mut().item_spacing = egui::vec2(CELL_GAP, CELL_GAP);
+
+            ui.label(
+                RichText::new("Select a map:")
+                    .color(theme::VGA_WHITE)
+                    .monospace()
+                    .size(14.0),
+            );
+            ui.add_space(4.0);
+
+            for chunk_start in (0..maps.len()).step_by(COLS) {
+                ui.horizontal(|ui| {
+                    for col in 0..COLS {
+                        let i = chunk_start + col;
+                        if i >= maps.len() {
+                            ui.allocate_space(egui::vec2(CELL_W, CELL_H));
+                            continue;
+                        }
+                        let is_active = i == selected;
+                        let (clicked, is_hovered) =
+                            map_cell(ui, &maps[i], CELL_W, CELL_H, is_active);
+                        if is_hovered {
+                            hovered = Some(i);
+                        }
+                        if clicked {
+                            selected = i;
+                            activated = Some(i);
+                        }
+                    }
+                });
             }
-        }
-    });
+
+            ui.add_space(8.0);
+            let display_idx = hovered.unwrap_or(selected);
+            let lump = &maps[display_idx];
+            let title = super::map_titles::title_for(lump).unwrap_or(lump);
+            ui.label(
+                RichText::new(title)
+                    .color(theme::VGA_WHITE)
+                    .monospace()
+                    .size(14.0)
+                    .strong(),
+            );
+            if !wad_path_label.is_empty() {
+                ui.label(
+                    RichText::new(&wad_path_label)
+                        .color(theme::VGA_WHITE)
+                        .monospace(),
+                );
+            }
+        });
+
+    if let Some(i) = activated {
+        load_selected_map(state, maps[i].clone());
+        return true;
+    }
+
     ui.add_space(6.0);
 
     let close = ui
         .horizontal(|ui| {
-            let ok = button(ui, "OK").clicked();
-            let cancel = button(ui, "cancel").clicked();
-            if ok {
-                let name = maps[selected].clone();
-                load_selected_map(state, name);
-                return true;
-            }
-            cancel
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                button(ui, "cancel").clicked()
+            })
+            .inner
         })
         .inner;
 
@@ -727,6 +790,25 @@ fn load_selected_map(state: &mut EditorState, name: String) {
 
 fn ok_button(ui: &mut egui::Ui, label: &str) -> bool {
     button(ui, label).clicked()
+}
+
+/// Beveled gray cell with blue text - mimics the original EdMap map grid buttons.
+/// Returns (clicked, hovered).
+fn map_cell(ui: &mut egui::Ui, label: &str, w: f32, h: f32, selected: bool) -> (bool, bool) {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+    let painter = ui.painter_at(rect);
+    let hovered = resp.hovered();
+    let pressed = selected || resp.is_pointer_button_down_on() || hovered;
+    painter.rect_filled(rect, 0.0, theme::MENU_BG);
+    theme::draw_bevel(&painter, rect, pressed);
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        egui::FontId::new(13.0, egui::FontFamily::Monospace),
+        theme::VGA_BLUE,
+    );
+    (resp.clicked(), hovered)
 }
 
 fn button(ui: &mut egui::Ui, label: &str) -> egui::Response {

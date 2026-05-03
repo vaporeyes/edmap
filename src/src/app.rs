@@ -9,6 +9,7 @@ mod dialog;
 mod export_picture;
 mod hittest;
 mod keybindings;
+mod map_titles;
 mod mem_probe;
 mod menu;
 mod sidebar;

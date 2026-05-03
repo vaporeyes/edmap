@@ -105,7 +105,11 @@ fn info_box(ui: &mut egui::Ui, state: &EditorState, mem_free_kb: u64, mem_total_
     frame.show(ui, |ui| {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
         let base = state.map.as_ref().map(|m| m.name.as_str()).unwrap_or("untitled");
-        let map_name = if state.is_dirty { format!("{base} *") } else { base.to_string() };
+        let titled = match super::map_titles::title_for(base) {
+            Some(title) => format!("{base} {title}"),
+            None => base.to_string(),
+        };
+        let map_name = if state.is_dirty { format!("{titled} *") } else { titled };
         ui.label(RichText::new(map_name).color(theme::VGA_YELLOW).strong());
         let origin = if state.wad_path.is_some() { "from PWAD" } else { "original map" };
         ui.label(RichText::new(origin).color(theme::VGA_WHITE).size(11.0));

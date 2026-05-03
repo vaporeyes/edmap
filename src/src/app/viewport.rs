@@ -21,7 +21,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState, bank: &mut TextureBank) 
     // Publish the hover to state so the sidebar can show preview details when
     // nothing is selected. Read on the next frame.
     state.hover_object = match hover {
-        Some(Hover::Vertex(i)) | Some(Hover::LineDef(i)) | Some(Hover::Thing(i)) => Some(i),
+        Some(Hover::Vertex(i))
+        | Some(Hover::LineDef(i))
+        | Some(Hover::Sector(i))
+        | Some(Hover::Thing(i)) => Some(i),
         None => None,
     };
     handle_input(ui, &response, state, hover);
@@ -58,17 +61,21 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState, bank: &mut TextureBank) 
             let highlighted_sector = state.mode == SelectionMode::Sector
                 && sidedef_in_selected_sector(map, ld, &state.selection);
             let hovered = matches!(hover, Some(Hover::LineDef(h)) if h == i);
+            let hovered_sector = matches!(hover, Some(Hover::Sector(s))
+                if sidedef_in_sector(map, ld, s));
 
             let color = if selected || hovered {
                 theme::LINEDEF_SELECTED
             } else if highlighted_sector {
                 theme::VGA_YELLOW
+            } else if hovered_sector {
+                theme::VGA_BRIGHT_CYAN
             } else if ld.is_two_sided() {
                 theme::LINEDEF_TWO_SIDED
             } else {
                 theme::LINEDEF_NORMAL
             };
-            let width = if selected || hovered { 2.0 } else { 1.0 };
+            let width = if selected || hovered || hovered_sector { 2.0 } else { 1.0 };
             let pa = to_screen(egui::pos2(a.x as f32, a.y as f32));
             let pb = to_screen(egui::pos2(b.x as f32, b.y as f32));
             painter.line_segment([pa, pb], Stroke::new(width, color));
@@ -168,6 +175,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState, bank: &mut TextureBank) 
 enum Hover {
     Vertex(usize),
     LineDef(usize),
+    Sector(usize),
     Thing(usize),
 }
 
@@ -180,9 +188,10 @@ fn compute_hover(response: &egui::Response, state: &EditorState) -> Option<Hover
         SelectionMode::Vertex => hittest::nearest_vertex(map, cursor, tol).map(Hover::Vertex),
         SelectionMode::LineDef => hittest::nearest_linedef(map, cursor, tol).map(Hover::LineDef),
         SelectionMode::Sector => {
-            // Hover preview for sector mode highlights the nearest LineDef so user
-            // sees which line they're "facing" before the click resolves to a sector.
-            hittest::nearest_linedef(map, cursor, tol).map(Hover::LineDef)
+            // Use a generous tolerance so cursor "inside" a sector still resolves;
+            // sector_under maps the nearest linedef to its facing sector.
+            let sector_tol = (PICK_TOL_PIXELS * 4.0 / state.view_zoom).max(2.0);
+            hittest::sector_under(map, cursor, sector_tol).map(Hover::Sector)
         }
         SelectionMode::Thing => hittest::nearest_thing(map, cursor, tol).map(Hover::Thing),
     }
@@ -192,6 +201,7 @@ fn hover_index_for_mode(mode: SelectionMode, hover: Option<Hover>) -> Option<usi
     match (mode, hover) {
         (SelectionMode::Vertex, Some(Hover::Vertex(i))) => Some(i),
         (SelectionMode::LineDef, Some(Hover::LineDef(i))) => Some(i),
+        (SelectionMode::Sector, Some(Hover::Sector(i))) => Some(i),
         (SelectionMode::Thing, Some(Hover::Thing(i))) => Some(i),
         _ => None,
     }
@@ -211,6 +221,25 @@ fn sidedef_in_selected_sector(
         }
         let Some(sd) = map.sidedefs.get(sd_idx as usize) else { continue };
         if selection.iter().any(|&s| s == sd.sector as usize) {
+            return true;
+        }
+    }
+    false
+}
+
+/// True if `ld`'s front or back sidedef belongs to a single specific sector.
+fn sidedef_in_sector(
+    map: &crate::wad::MapData,
+    ld: &crate::wad::LineDef,
+    sector_idx: usize,
+) -> bool {
+    use crate::wad::LineDef;
+    for sd_idx in [ld.front_sidedef, ld.back_sidedef] {
+        if sd_idx == LineDef::NO_SIDEDEF {
+            continue;
+        }
+        let Some(sd) = map.sidedefs.get(sd_idx as usize) else { continue };
+        if sd.sector as usize == sector_idx {
             return true;
         }
     }
@@ -314,7 +343,14 @@ fn apply_click(state: &mut EditorState, hover: Option<Hover>, shift: bool) {
             Some(Hover::Thing(i)) => Some(i),
             _ => hittest::nearest_thing(map, cursor, tol),
         },
-        SelectionMode::Sector => hittest::sector_under(map, cursor, tol),
+        SelectionMode::Sector => match hover {
+            Some(Hover::Sector(i)) => Some(i),
+            _ => {
+                // Match the generous hover tolerance so what's highlighted is what gets picked.
+                let sector_tol = (PICK_TOL_PIXELS * 4.0 / state.view_zoom).max(2.0);
+                hittest::sector_under(map, cursor, sector_tol)
+            }
+        },
     };
 
     let Some(idx) = picked else {

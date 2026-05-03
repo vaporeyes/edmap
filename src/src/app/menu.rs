@@ -236,6 +236,27 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
                 open_wad_picker(state);
             }
         }
+        ("File (map)", "Load PWAD map") => {
+            let Some(wad) = &state.wad else {
+                state.status_message = Some("Load PWAD map: no WAD loaded.".into());
+                return;
+            };
+            let maps = wad.map_names();
+            if maps.is_empty() {
+                state.status_message = Some("Load PWAD map: this WAD has no maps.".into());
+                return;
+            }
+            if !super::commands::dirty_guard(state, super::state::PendingAction::OpenWad) {
+                return;
+            }
+            // Preselect the current map so the picker opens on it.
+            let selected = state
+                .map
+                .as_ref()
+                .and_then(|m| maps.iter().position(|n| n == &m.name))
+                .unwrap_or(0);
+            state.dialog = Some(Dialog::OpenMapPicker { maps, selected });
+        }
         ("File (map)", "Save map data") => super::commands::save_map(state),
         ("File (map)", "Play map") => super::commands::test_map(state),
         ("File (map)", "Test map settings") => super::commands::open_test_map_settings(state),
