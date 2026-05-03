@@ -65,14 +65,23 @@ pub struct WallBatch {
     pub vertex_count: i32,
 }
 
-/// CPU-decoded RGBA8 wall texture awaiting GL upload. The renderer takes
-/// ownership on the next `render` call and stores the resulting GL texture
-/// in its cache, keyed by `id`. Re-uploads with the same id are no-ops.
+/// Texture wrap mode requested at upload time. Walls and flats tile via
+/// `Repeat`; sprites clamp so the alpha border doesn't bleed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TexWrap {
+    Repeat,
+    ClampToEdge,
+}
+
+/// CPU-decoded RGBA8 texture awaiting GL upload. The renderer takes ownership
+/// on the next `render` call and stores the resulting GL texture in its cache,
+/// keyed by `id`. Re-uploads with the same id are no-ops.
 pub struct WallUpload {
     pub id: u64,
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
+    pub wrap: TexWrap,
 }
 
 /// GL resources for the 3D view. Lazily initialized on the first paint
@@ -106,8 +115,12 @@ struct Inner {
     vbo_dynamic: glow::Buffer,
     vao_walls: glow::VertexArray,
     vbo_walls: glow::Buffer,
-    /// Capacity of the dynamic VBO in floats; we reallocate when the per-frame
-    /// sprite stream grows beyond it.
+    /// Per-frame textured sprite stream — same vertex layout as walls but lives
+    /// in its own VBO so wall geometry caching isn't disturbed by sprite churn.
+    vao_sprites: glow::VertexArray,
+    vbo_sprites: glow::Buffer,
+    sprite_capacity: usize,
+    /// Capacity of the (currently unused) dynamic color VBO in floats.
     dynamic_capacity: usize,
 }
 
@@ -116,17 +129,22 @@ pub struct RenderInput<'a> {
     pub viewport: (i32, i32, i32, i32),
     pub view_proj: [[f32; 4]; 4],
     /// Flat-shaded floors + ceilings, packed (x,y,z,r,g,b,a) per vertex.
+    /// Currently unused (everything textured) but kept for future debug overlays.
     pub static_verts: &'a [f32],
     pub static_fp: u64,
-    /// Dynamic flat-shaded sprites, same vertex layout.
+    /// Dynamic flat-shaded geometry. Currently unused.
     pub dynamic_verts: &'a [f32],
-    /// Wall vertex stream, packed (x,y,z,u,v,brightness) per vertex.
+    /// Wall + flat textured vertex stream, packed (x,y,z,u,v,brightness).
     pub wall_verts: &'a [f32],
-    /// Per-texture wall draw groups within `wall_verts`.
+    /// Per-texture wall/flat draw groups within `wall_verts`.
     pub wall_batches: &'a [WallBatch],
     /// New textures to upload (caller provides only on cache invalidation).
     pub wall_uploads: &'a [WallUpload],
     pub wall_fp: u64,
+    /// Per-frame textured sprite vertex stream, same layout as `wall_verts`.
+    pub sprite_verts: &'a [f32],
+    /// Per-texture sprite draw groups within `sprite_verts`.
+    pub sprite_batches: &'a [WallBatch],
 }
 
 impl Renderer3D {
@@ -159,7 +177,7 @@ impl Renderer3D {
                 if self.wall_textures.contains_key(&up.id) {
                     continue;
                 }
-                let tex = upload_rgba_texture(gl, up.width, up.height, &up.pixels);
+                let tex = upload_rgba_texture(gl, up.width, up.height, &up.pixels, up.wrap);
                 self.wall_textures.insert(up.id, (tex, up.width, up.height));
             }
 
@@ -193,7 +211,29 @@ impl Renderer3D {
             }
 
             // ------------------------------------------------------------------
-            // Dynamic (flat-shaded) sprite stream.
+            // Per-frame textured sprite stream (billboards).
+            // ------------------------------------------------------------------
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(inner.vbo_sprites));
+            if input.sprite_verts.len() > inner.sprite_capacity {
+                let new_cap = input.sprite_verts.len().next_power_of_two().max(1024);
+                gl.buffer_data_size(
+                    glow::ARRAY_BUFFER,
+                    (new_cap * std::mem::size_of::<f32>()) as i32,
+                    glow::DYNAMIC_DRAW,
+                );
+                inner.sprite_capacity = new_cap;
+            }
+            if !input.sprite_verts.is_empty() {
+                gl.buffer_sub_data_u8_slice(
+                    glow::ARRAY_BUFFER,
+                    0,
+                    bytemuck_cast(input.sprite_verts),
+                );
+            }
+
+            // ------------------------------------------------------------------
+            // Dynamic flat-shaded color stream (currently unused — kept for
+            // future debug overlays / reticles).
             // ------------------------------------------------------------------
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(inner.vbo_dynamic));
             if input.dynamic_verts.len() > inner.dynamic_capacity {
@@ -252,17 +292,40 @@ impl Renderer3D {
             }
 
             // ------------------------------------------------------------------
-            // Pass 2: flat-shaded color geometry (floors, ceilings, sprites).
+            // Pass 2: textured sprite billboards. Cull disabled because
+            // sprites should be visible from either side of the quad.
             // ------------------------------------------------------------------
-            gl.use_program(Some(inner.color_program));
-            gl.uniform_matrix_4_f32_slice(Some(&inner.u_color_view_proj), false, &mat);
-            if self.static_vertex_count > 0 {
-                gl.bind_vertex_array(Some(inner.vao_static));
-                gl.draw_arrays(glow::TRIANGLES, 0, self.static_vertex_count);
+            if !input.sprite_batches.is_empty() {
+                gl.disable(glow::CULL_FACE);
+                gl.bind_vertex_array(Some(inner.vao_sprites));
+                // Sprites emit UVs already in [0, 1] (one full sprite per quad);
+                // overriding u_tex_size = 1 makes the shader's `uv / u_tex_size`
+                // a no-op so the sprite spans the billboard exactly once.
+                gl.uniform_2_f32(Some(&inner.u_wall_tex_size), 1.0, 1.0);
+                for batch in input.sprite_batches {
+                    let Some(&(tex, _w, _h)) = self.wall_textures.get(&batch.texture_id) else {
+                        continue;
+                    };
+                    gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+                    gl.draw_arrays(glow::TRIANGLES, batch.vertex_offset, batch.vertex_count);
+                }
+                gl.enable(glow::CULL_FACE);
             }
-            if dyn_vertex_count > 0 {
-                gl.bind_vertex_array(Some(inner.vao_dynamic));
-                gl.draw_arrays(glow::TRIANGLES, 0, dyn_vertex_count);
+
+            // ------------------------------------------------------------------
+            // Pass 3: flat-shaded color geometry (kept for debug overlays).
+            // ------------------------------------------------------------------
+            if self.static_vertex_count > 0 || dyn_vertex_count > 0 {
+                gl.use_program(Some(inner.color_program));
+                gl.uniform_matrix_4_f32_slice(Some(&inner.u_color_view_proj), false, &mat);
+                if self.static_vertex_count > 0 {
+                    gl.bind_vertex_array(Some(inner.vao_static));
+                    gl.draw_arrays(glow::TRIANGLES, 0, self.static_vertex_count);
+                }
+                if dyn_vertex_count > 0 {
+                    gl.bind_vertex_array(Some(inner.vao_dynamic));
+                    gl.draw_arrays(glow::TRIANGLES, 0, dyn_vertex_count);
+                }
             }
 
             gl.bind_vertex_array(None);
@@ -294,10 +357,16 @@ impl Inner {
         let (vao_static, vbo_static) = make_color_vao(gl);
         let (vao_dynamic, vbo_dynamic) = make_color_vao(gl);
         let (vao_walls, vbo_walls) = make_wall_vao(gl);
+        let (vao_sprites, vbo_sprites) = make_wall_vao(gl);
 
-        // Pre-size the dynamic color buffer to avoid the first-frame realloc.
-        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo_dynamic));
         let initial_cap: usize = 4096;
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo_dynamic));
+        gl.buffer_data_size(
+            glow::ARRAY_BUFFER,
+            (initial_cap * std::mem::size_of::<f32>()) as i32,
+            glow::DYNAMIC_DRAW,
+        );
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo_sprites));
         gl.buffer_data_size(
             glow::ARRAY_BUFFER,
             (initial_cap * std::mem::size_of::<f32>()) as i32,
@@ -317,6 +386,9 @@ impl Inner {
             vbo_dynamic,
             vao_walls,
             vbo_walls,
+            vao_sprites,
+            vbo_sprites,
+            sprite_capacity: initial_cap,
             dynamic_capacity: initial_cap,
         }
     }
@@ -375,9 +447,15 @@ unsafe fn make_wall_vao(gl: &glow::Context) -> (glow::VertexArray, glow::Buffer)
     (vao, vbo)
 }
 
-/// Upload an RGBA8 image to a fresh GL_TEXTURE_2D with nearest filtering and
-/// repeat wrap mode (DOOM walls tile horizontally and vertically).
-unsafe fn upload_rgba_texture(gl: &glow::Context, w: u32, h: u32, pixels: &[u8]) -> glow::Texture {
+/// Upload an RGBA8 image to a fresh GL_TEXTURE_2D with nearest filtering.
+/// Wrap mode is per-call so sprites can clamp while walls/flats tile.
+unsafe fn upload_rgba_texture(
+    gl: &glow::Context,
+    w: u32,
+    h: u32,
+    pixels: &[u8],
+    wrap: TexWrap,
+) -> glow::Texture {
     let tex = gl.create_texture().expect("create_texture");
     gl.bind_texture(glow::TEXTURE_2D, Some(tex));
     gl.tex_image_2d(
@@ -391,10 +469,14 @@ unsafe fn upload_rgba_texture(gl: &glow::Context, w: u32, h: u32, pixels: &[u8])
         glow::UNSIGNED_BYTE,
         Some(pixels),
     );
+    let wrap_gl = match wrap {
+        TexWrap::Repeat => glow::REPEAT,
+        TexWrap::ClampToEdge => glow::CLAMP_TO_EDGE,
+    } as i32;
     gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
     gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::REPEAT as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::REPEAT as i32);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, wrap_gl);
+    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, wrap_gl);
     tex
 }
 

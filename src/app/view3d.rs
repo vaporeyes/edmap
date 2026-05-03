@@ -8,7 +8,7 @@ use eframe::egui_glow;
 
 use super::state::EditorState;
 use super::textures::TextureBank;
-use super::view3d_gl::{RenderInput, Renderer3D, WallUpload};
+use super::view3d_gl::{RenderInput, Renderer3D, TexWrap, WallBatch, WallUpload};
 use crate::theme;
 use crate::wad::{LineDef, MapData};
 
@@ -71,9 +71,7 @@ pub fn draw(
     let fov_y = state.config.view3d.fov_degrees.clamp(30.0, 130.0).to_radians();
     ensure_geometry_cache(map, &mut state.view3d_geom_cache);
 
-    // Decode any textures the renderer hasn't received yet for this map.
-    // The renderer dedupes by id, so we only need to send each texture once
-    // per cache invalidation; uploaded_textures tracks what we've sent.
+    // Decode any wall/flat textures the renderer hasn't received yet for this map.
     let mut wall_uploads: Vec<WallUpload> = Vec::new();
     if let Some(wad) = state.wad.as_ref() {
         for (kind, name) in &state.view3d_geom_cache.wall_tex_names {
@@ -84,29 +82,65 @@ pub fn draw(
             let decoded = match kind {
                 TextureKind::Wall => bank.wall_rgba(wad, name),
                 TextureKind::Flat => bank.flat_rgba(wad, name),
+                TextureKind::Sprite => None, // sprites decoded below
             };
             if let Some((w, h, pixels)) = decoded {
-                wall_uploads.push(WallUpload { id, width: w, height: h, pixels });
+                wall_uploads.push(WallUpload {
+                    id,
+                    width: w,
+                    height: h,
+                    pixels,
+                    wrap: TexWrap::Repeat,
+                });
             }
-            // Mark as "tried" either way so we don't re-decode missing textures.
             state.view3d_geom_cache.uploaded_textures.insert(id);
         }
     }
 
-    // Flat-shaded floors + ceilings packed for the color shader.
-    let mut static_verts: Vec<f32> = Vec::with_capacity(state.view3d_geom_cache.tris.len() * 21);
-    pack_tris(&state.view3d_geom_cache.tris, &mut static_verts);
+    // Build per-frame sprite billboards (camera-yaw-dependent) into their own
+    // textured batch map, then decode any sprite textures not yet uploaded.
+    let mut sprite_by_tex: TexBatchMap = std::collections::HashMap::new();
+    let mut sprite_picks: Vec<SpritePick> = Vec::new();
+    build_thing_sprite_batches(map, &state.thing_filter, &cam, &mut sprite_by_tex, &mut sprite_picks);
+    let (sprite_verts, sprite_batches, sprite_tex_names) = flatten_batches(sprite_by_tex);
+    if let Some(wad) = state.wad.as_ref() {
+        for (kind, name) in &sprite_tex_names {
+            let id = texture_name_id(*kind, name);
+            if state.view3d_geom_cache.uploaded_textures.contains(&id) {
+                continue;
+            }
+            if let Some((w, h, pixels)) = bank.sprite_rgba(wad, name) {
+                wall_uploads.push(WallUpload {
+                    id,
+                    width: w,
+                    height: h,
+                    pixels,
+                    wrap: TexWrap::ClampToEdge,
+                });
+            }
+            state.view3d_geom_cache.uploaded_textures.insert(id);
+        }
+    }
 
-    // Sprites depend on camera yaw, so they're rebuilt + repacked per frame.
-    let mut sprites: Vec<Tri3D> = Vec::new();
-    build_thing_sprites(map, &state.thing_filter, &cam, &mut sprites);
-    let mut dynamic_verts: Vec<f32> = Vec::with_capacity(sprites.len() * 21);
-    pack_tris(&sprites, &mut dynamic_verts);
+    // Sprite picking: if the user clicked, find the nearest billboard whose
+    // projected screen-space bounding box contains the cursor.
+    if response.clicked_by(egui::PointerButton::Primary) {
+        if let Some(click_pos) = response.interact_pointer_pos() {
+            let aspect = (available.width() / available.height().max(1.0)).max(0.01);
+            let view_proj = build_view_proj(&cam, fov_y, aspect);
+            if let Some(picked_idx) = pick_sprite(&sprite_picks, &view_proj, available, click_pos) {
+                handle_sprite_pick(state, picked_idx);
+            }
+        }
+    }
+
+    // Legacy color-shader inputs (currently unused — kept as empty slices).
+    let static_verts: Vec<f32> = Vec::new();
+    let dynamic_verts: Vec<f32> = Vec::new();
 
     let aspect = (available.width() / available.height().max(1.0)).max(0.01);
     let view_proj = build_view_proj(&cam, fov_y, aspect);
 
-    // Hand off to the GL renderer via egui_glow's PaintCallback.
     let cb_data = CallbackData {
         renderer: renderer.clone(),
         view_proj,
@@ -117,6 +151,8 @@ pub fn draw(
         wall_batches: state.view3d_geom_cache.wall_batches.clone(),
         wall_uploads,
         wall_fp: state.view3d_geom_cache.fingerprint,
+        sprite_verts,
+        sprite_batches,
     };
     let callback = egui::PaintCallback {
         rect: available,
@@ -136,6 +172,8 @@ pub fn draw(
                         wall_batches: &cb_data.wall_batches,
                         wall_uploads: &cb_data.wall_uploads,
                         wall_fp: cb_data.wall_fp,
+                        sprite_verts: &cb_data.sprite_verts,
+                        sprite_batches: &cb_data.sprite_batches,
                     },
                 );
             }
@@ -157,12 +195,87 @@ struct CallbackData {
     static_fp: u64,
     dynamic_verts: Vec<f32>,
     wall_verts: Vec<f32>,
-    wall_batches: Vec<super::view3d_gl::WallBatch>,
+    wall_batches: Vec<WallBatch>,
     wall_uploads: Vec<WallUpload>,
     wall_fp: u64,
+    sprite_verts: Vec<f32>,
+    sprite_batches: Vec<WallBatch>,
 }
 
 /// Pack a Tri3D slice into the (x,y,z,r,g,b,a) float layout the renderer expects.
+/// CPU sprite picking: project each billboard's center to screen space, build
+/// a screen-space half-extent rect, return the nearest hit.
+fn pick_sprite(
+    picks: &[SpritePick],
+    view_proj: &[[f32; 4]; 4],
+    screen: egui::Rect,
+    click: egui::Pos2,
+) -> Option<u32> {
+    let half_w_px = screen.width() * 0.5;
+    let half_h_px = screen.height() * 0.5;
+    let cx = screen.center().x;
+    let cy = screen.center().y;
+    let mut best: Option<(f32, u32)> = None;
+    for p in picks {
+        // Project center to clip space, perspective divide, viewport map.
+        let [x, y, z] = p.center;
+        let cw = view_proj[0][3] * x
+            + view_proj[1][3] * y
+            + view_proj[2][3] * z
+            + view_proj[3][3];
+        if cw <= 0.001 {
+            continue; // behind camera
+        }
+        let cx_clip = view_proj[0][0] * x
+            + view_proj[1][0] * y
+            + view_proj[2][0] * z
+            + view_proj[3][0];
+        let cy_clip = view_proj[0][1] * x
+            + view_proj[1][1] * y
+            + view_proj[2][1] * z
+            + view_proj[3][1];
+        let cz_clip = view_proj[0][2] * x
+            + view_proj[1][2] * y
+            + view_proj[2][2] * z
+            + view_proj[3][2];
+        let ndc_x = cx_clip / cw;
+        let ndc_y = cy_clip / cw;
+        let ndc_z = cz_clip / cw;
+        if !(-1.0..=1.0).contains(&ndc_z) {
+            continue;
+        }
+        let sx = cx + ndc_x * half_w_px;
+        let sy = cy - ndc_y * half_h_px; // y inverts (NDC up vs screen down)
+        // Scale half-extents from world units to screen pixels using cw as
+        // the post-perspective denominator (already incorporates depth).
+        let scale = half_h_px / cw;
+        let half_w_screen = p.half_w * scale;
+        let half_h_screen = p.height * 0.5 * scale;
+        let dx = (click.x - sx).abs();
+        let dy = (click.y - sy).abs();
+        if dx <= half_w_screen && dy <= half_h_screen {
+            // Nearer billboards (smaller cw) win on tie.
+            if best.map_or(true, |(d, _)| cw < d) {
+                best = Some((cw, p.thing_idx));
+            }
+        }
+    }
+    best.map(|(_, i)| i)
+}
+
+fn handle_sprite_pick(state: &mut EditorState, thing_idx: u32) {
+    use super::state::SelectionMode;
+    let idx = thing_idx as usize;
+    let Some(map) = state.map.as_ref() else { return };
+    let Some(t) = map.things.get(idx) else { return };
+    let type_no = t.thing_type;
+    state.mode = SelectionMode::Thing;
+    state.selection = vec![idx];
+    state.status_message = Some(format!(
+        "3D pick: thing #{idx} (type {type_no}) — Q to exit and edit"
+    ));
+}
+
 fn pack_tris(tris: &[Tri3D], out: &mut Vec<f32>) {
     for t in tris {
         let r = t.color.r() as f32 / 255.0;
@@ -342,6 +455,7 @@ pub struct GeometryCache {
 pub enum TextureKind {
     Wall,
     Flat,
+    Sprite,
 }
 
 type TexBatchMap = std::collections::HashMap<(TextureKind, String), Vec<f32>>;
@@ -537,6 +651,7 @@ pub fn texture_name_id(kind: TextureKind, name: &str) -> u64 {
     match kind {
         TextureKind::Wall => "W:".hash(&mut h),
         TextureKind::Flat => "F:".hash(&mut h),
+        TextureKind::Sprite => "S:".hash(&mut h),
     }
     name.to_ascii_uppercase().hash(&mut h);
     h.finish()
@@ -1098,33 +1213,61 @@ fn point_in_tri(p: (f32, f32), a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> b
 }
 
 // ---------------------------------------------------------------------------
-// Phase 1.5c: thing sprite billboards
+// Phase 2.0d: textured thing sprite billboards + sprite picking metadata
 // ---------------------------------------------------------------------------
 
-const THING_HEIGHT: f32 = 56.0; // DOOM-ish stand-up marker height
+const FALLBACK_THING_HEIGHT: f32 = 56.0;
 
-/// Emit two billboard triangles per thing (filtered by category) into `out`.
-/// Billboards face the camera horizontally (yaw-aligned), upright in world Z.
-fn build_thing_sprites(
+/// Picking record kept alongside each emitted sprite billboard so a click on
+/// the 3D viewport can be resolved back to a thing index without re-running
+/// the billboard math.
+#[derive(Clone, Copy)]
+pub struct SpritePick {
+    pub thing_idx: u32,
+    /// World-space center of the billboard (for distance/depth tie-break).
+    pub center: [f32; 3],
+    /// Half-width in world units (the right-facing radius).
+    pub half_w: f32,
+    /// Vertical extent (foot to head) in world units.
+    pub height: f32,
+}
+
+/// Build textured billboard quads for every unfiltered thing. Sprites are
+/// looked up via `things_table::sprite_candidates` and the first available
+/// frame name is used. Anchored at the sector floor with the sprite scaled
+/// so it sits on the ground at its real radius.
+///
+/// Returns (`vertex_map_was_extended`, picks). The vertex stream is appended
+/// to `by_tex` keyed by `(TextureKind::Sprite, sprite_name)` so identical
+/// thing types batch together and we issue one draw call per sprite frame.
+fn build_thing_sprite_batches(
     map: &MapData,
     thing_filter: &[bool; 11],
     cam: &Cam3D,
-    out: &mut Vec<Tri3D>,
+    by_tex: &mut TexBatchMap,
+    picks: &mut Vec<SpritePick>,
 ) {
     use super::things_table;
-    // Camera-right vector projected onto the world XY plane (horizontal billboard).
-    // World right = perpendicular to camera forward in the XY plane.
     let (sin_y, cos_y) = cam.yaw.sin_cos();
     let right_x = cos_y;
     let right_y = -sin_y;
+
     for (idx, t) in map.things.iter().enumerate() {
         let cat = things_table::category_of(t.thing_type);
         if !thing_filter[cat.idx()] {
             continue;
         }
+        let candidates = things_table::sprite_candidates(t.thing_type);
+        let Some(&sprite_name) = candidates.first() else {
+            continue; // unknown type — skip rather than render a fallback marker
+        };
+
+        // Use the radius for billboard half-width (matches the in-game silhouette
+        // footprint). Height: monsters/things stand on the floor; we fall back
+        // to a fixed pixel height because we don't know real sprite size yet.
         let radius = (things_table::radius_of(t.thing_type) as f32).max(8.0);
         let half_w = radius;
-        let height = THING_HEIGHT.max(radius * 1.5);
+        let height = FALLBACK_THING_HEIGHT.max(radius * 1.5);
         let foot_z = sector_floor_at(map, t.x as f32, t.y as f32).unwrap_or(0.0);
         let head_z = foot_z + height;
         let cx = t.x as f32;
@@ -1133,32 +1276,75 @@ fn build_thing_sprites(
         let ly = cy - right_y * half_w;
         let rx = cx + right_x * half_w;
         let ry = cy + right_y * half_w;
-        let color = thing_color(cat);
-        let pick = Some(idx as u32);
-        let bl = [lx, ly, foot_z];
-        let br = [rx, ry, foot_z];
-        let tr = [rx, ry, head_z];
-        let tl = [lx, ly, head_z];
-        out.push(Tri3D { a: bl, b: br, c: tr, color, pick });
-        out.push(Tri3D { a: bl, b: tr, c: tl, color, pick });
+        // Brightness: light from the sector the thing stands in.
+        let brightness = sector_at(map, cx, cy)
+            .map(|s| (s.light_level.clamp(0, 255) as f32 / 255.0).max(0.12))
+            .unwrap_or(1.0);
+        // UVs in pixel space; the wall shader normalizes by texture size.
+        // (0,0) is top-left; sprite top sits at head_z, bottom at foot_z.
+        // We don't yet know the texture's real width/height at this point —
+        // pass nominal (1, 1) and rely on the shader's `u_tex_size` to map
+        // per-pixel coords to [0,1] correctly. Instead, encode UVs as the
+        // sprite-canvas extents we WANT to fill: u_left=0, u_right=tex_w,
+        // v_top=0, v_bot=tex_h. We stash a sentinel of -1 for "use full
+        // texture" — the shader can't see this so we use 0..1 directly via
+        // a conventional 0..(tex_w/tex_w)=1 trick: emit u_left=0, u_right=1
+        // and pass that as raw UV that the shader will divide by tex_size.
+        // Since we want u in [0..1] to map exactly to one full texture, and
+        // the shader does uv/tex_size, we need raw=tex_size. We don't have
+        // tex_size yet. Solution: emit raw UV in canonical pixel space
+        // assuming the sprite texture spans (0..0) to (W..H) and let the
+        // shader divide. We approximate by pre-baking UVs at upload time.
+        // ---- pragmatic cut: emit u in [0,1] range as 0 and a "stretch"
+        // ---- marker handled by post-processing. Simpler: just use a
+        // ---- known sprite size of 1 unit and let GL_REPEAT not kick in
+        // ---- (sprites are CLAMP_TO_EDGE so going out of [0,1] clamps).
+        // Final approach: emit per-vertex UV in pixel space using the
+        // texture's *actual* size known at upload time. Here we pass the
+        // half-known UV (0,0)→(W,H) where W,H come from the sprite texture
+        // via a side-channel. Since we don't have access to those numbers
+        // here, store the UVs as raw 0..1 and rely on the shader doing
+        // uv * 1.0 / 1.0... no — that's not right either.
+        //
+        // SOLVED: use a special UV convention — store the UVs in pixel
+        // space matching a NOMINAL "1×1" canvas (u in {0,1}, v in {0,1}).
+        // The shader divides by `u_tex_size`, but if we set u_tex_size=1
+        // when binding sprite textures, the divide is a no-op and we get
+        // the natural sprite-spanning sampling. This requires per-batch
+        // binding of u_tex_size = (1, 1) for sprites.
+        // (Implemented in the renderer's sprite pass.)
+        let entry = by_tex
+            .entry((TextureKind::Sprite, sprite_name.to_string()))
+            .or_default();
+        let mut push = |x: f32, y: f32, z: f32, u: f32, v: f32| {
+            entry.push(x);
+            entry.push(y);
+            entry.push(z);
+            entry.push(u);
+            entry.push(v);
+            entry.push(brightness);
+        };
+        // Quad: bl (0,1) -> br (1,1) -> tr (1,0) -> tl (0,0)
+        // Two CCW triangles when viewed from camera.
+        push(lx, ly, foot_z, 0.0, 1.0);
+        push(rx, ry, foot_z, 1.0, 1.0);
+        push(rx, ry, head_z, 1.0, 0.0);
+        push(lx, ly, foot_z, 0.0, 1.0);
+        push(rx, ry, head_z, 1.0, 0.0);
+        push(lx, ly, head_z, 0.0, 0.0);
+
+        picks.push(SpritePick {
+            thing_idx: idx as u32,
+            center: [cx, cy, foot_z + height * 0.5],
+            half_w,
+            height,
+        });
     }
 }
 
-fn thing_color(cat: super::things_table::Category) -> Color32 {
-    use super::things_table::Category as C;
-    match cat {
-        C::PlayerStart => Color32::from_rgb(80, 240, 80),
-        C::Teleport => Color32::from_rgb(255, 100, 240),
-        C::Monster => Color32::from_rgb(240, 80, 80),
-        C::Weapon => Color32::from_rgb(220, 200, 90),
-        C::Ammo => Color32::from_rgb(180, 140, 60),
-        C::Health => Color32::from_rgb(220, 90, 90),
-        C::Powerup => Color32::from_rgb(80, 200, 240),
-        C::Key => Color32::from_rgb(240, 220, 60),
-        C::Obstacle => Color32::from_rgb(150, 150, 150),
-        C::Light => Color32::from_rgb(255, 240, 160),
-        C::Decoration => Color32::from_rgb(170, 130, 200),
-    }
+fn sector_at(map: &MapData, x: f32, y: f32) -> Option<&crate::wad::Sector> {
+    let idx = super::hittest::sector_under(map, (x, y), 1.0e6)?;
+    map.sectors.get(idx)
 }
 
 /// Convenience used by keybindings — toggle 3D mode and reset camera each entry.

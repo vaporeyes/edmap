@@ -90,6 +90,27 @@ impl TextureBank {
         self.handles.get(&key)
     }
 
+    /// Decode a sprite (Patch lump between S_START/S_END) to raw RGBA8 with
+    /// real alpha for the transparent posts. Returns (w, h, bytes).
+    pub fn sprite_rgba(&self, wad: &Wad, name: &str) -> Option<(u32, u32, Vec<u8>)> {
+        let palette = self.palette.as_ref()?;
+        let bytes = wad.lump_bytes_by_name(name)?;
+        let patch = Patch::parse(bytes).ok()?;
+        let w = patch.width as u32;
+        let h = patch.height as u32;
+        let mut out = Vec::with_capacity((w as usize) * (h as usize) * 4);
+        for &p in &patch.pixels {
+            match p {
+                Some(idx) => {
+                    let [r, g, b] = palette.0.get(idx as usize).copied().unwrap_or([0, 0, 0]);
+                    out.extend_from_slice(&[r, g, b, 255]);
+                }
+                None => out.extend_from_slice(&[0, 0, 0, 0]),
+            }
+        }
+        Some((w, h, out))
+    }
+
     /// Decode a flat (floor/ceiling) lump to raw RGBA8 pixel data.
     /// FLATs are always 64×64; returns (64, 64, bytes) on success.
     pub fn flat_rgba(&self, wad: &Wad, name: &str) -> Option<(u32, u32, Vec<u8>)> {
