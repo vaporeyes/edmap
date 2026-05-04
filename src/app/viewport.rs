@@ -99,8 +99,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState, bank: &mut TextureBank) 
                 color,
             );
         }
-        // Things (X markers). Filtered by category if state.thing_filter has any
-        // unchecked entries; bbox overlay rendered when state.things_bbox_visible.
+        // Things — EdMap-style: yellow filled disc, category-colored outline
+        // ring, and a short line from center showing the thing's facing angle.
+        // Filtered by category via state.thing_filter; optional radius bbox.
         for (i, t) in map.things.iter().enumerate() {
             let cat = super::things_table::category_of(t.thing_type);
             if !state.thing_filter[cat.idx()] {
@@ -109,11 +110,24 @@ pub fn draw(ui: &mut egui::Ui, state: &mut EditorState, bank: &mut TextureBank) 
             let p = to_screen(egui::pos2(t.x as f32, t.y as f32));
             let selected = state.mode == SelectionMode::Thing && state.selection.contains(&i);
             let hovered = matches!(hover, Some(Hover::Thing(h)) if h == i);
-            let color = if selected || hovered { theme::LINEDEF_SELECTED } else { theme::THING_MARK };
-            let s = if selected || hovered { 6.0 } else { 4.0 };
-            let stroke = Stroke::new(if selected || hovered { 2.0 } else { 1.0 }, color);
-            painter.line_segment([p + egui::vec2(-s, -s), p + egui::vec2(s, s)], stroke);
-            painter.line_segment([p + egui::vec2(-s, s), p + egui::vec2(s, -s)], stroke);
+            let r = if selected || hovered { 5.0 } else { 4.0 };
+            // Yellow body disc — same for every thing.
+            painter.circle_filled(p, r, theme::VGA_YELLOW);
+            // Outline ring tinted by category. Selection/hover overrides with
+            // bright red so the picked thing stands out.
+            let ring = if selected || hovered {
+                theme::LINEDEF_SELECTED
+            } else {
+                thing_ring_color(cat)
+            };
+            let ring_w = if selected || hovered { 2.0 } else { 1.5 };
+            painter.circle_stroke(p, r, Stroke::new(ring_w, ring));
+            // Direction line: DOOM angles are degrees with 0°=east, 90°=north.
+            // World y is north, screen y flipped, so the dy is negated.
+            let angle_rad = (t.angle as f32).to_radians();
+            let line_len = r + 4.0;
+            let dir = egui::vec2(angle_rad.cos() * line_len, -angle_rad.sin() * line_len);
+            painter.line_segment([p, p + dir], Stroke::new(ring_w, ring));
 
             if state.things_bbox_visible {
                 let r = super::things_table::radius_of(t.thing_type) as f32;
@@ -557,4 +571,24 @@ fn paint_thing_sprite_popup(
                     ui.colored_label(theme::VGA_WHITE, label);
                 });
         });
+}
+
+/// EdMap-style outline ring color per Thing category. Player starts ring
+/// green, monsters red, items/keys/decorations get distinct hues so the map
+/// stays readable when zoomed out.
+fn thing_ring_color(cat: super::things_table::Category) -> egui::Color32 {
+    use super::things_table::Category as C;
+    match cat {
+        C::PlayerStart => theme::VGA_BRIGHT_GREEN,
+        C::Monster => theme::VGA_BRIGHT_RED,
+        C::Teleport => egui::Color32::from_rgb(255, 100, 240),
+        C::Weapon => theme::VGA_BRIGHT_BLUE,
+        C::Ammo => theme::VGA_BRIGHT_BLUE,
+        C::Health => theme::VGA_BRIGHT_CYAN,
+        C::Powerup => theme::VGA_BRIGHT_CYAN,
+        C::Key => theme::VGA_YELLOW,
+        C::Obstacle => theme::VGA_GRAY,
+        C::Light => theme::VGA_WHITE,
+        C::Decoration => theme::VGA_DARK_GRAY,
+    }
 }
