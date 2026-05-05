@@ -10,7 +10,7 @@ const FLOATS_PER_COLOR_VERTEX: usize = 7;
 /// Textured wall vertex: position (3) + UV (2) + brightness (1) = 6 f32.
 const FLOATS_PER_WALL_VERTEX: usize = 6;
 
-const COLOR_VS: &str = r#"#version 330 core
+const COLOR_VS: &str = r#"#version 300 es
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec4 in_color;
 uniform mat4 u_view_proj;
@@ -20,7 +20,8 @@ void main() {
     gl_Position = u_view_proj * vec4(in_pos, 1.0);
 }
 "#;
-const COLOR_FS: &str = r#"#version 330 core
+const COLOR_FS: &str = r#"#version 300 es
+precision mediump float;
 in vec4 v_color;
 out vec4 frag;
 void main() {
@@ -28,7 +29,7 @@ void main() {
 }
 "#;
 
-const WALL_VS: &str = r#"#version 330 core
+const WALL_VS: &str = r#"#version 300 es
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec2 in_uv_px;
 layout(location = 2) in float in_brightness;
@@ -41,7 +42,8 @@ void main() {
     gl_Position = u_view_proj * vec4(in_pos, 1.0);
 }
 "#;
-const WALL_FS: &str = r#"#version 330 core
+const WALL_FS: &str = r#"#version 300 es
+precision mediump float;
 in vec2 v_uv_px;
 in float v_brightness;
 uniform sampler2D u_tex;

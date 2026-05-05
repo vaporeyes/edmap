@@ -1826,9 +1826,12 @@ fn test_map_settings_body(
     ui.colored_label(theme::MENU_FG, "Executable (gzdoom, dsda-doom, ...):");
     ui.horizontal(|ui| {
         ui.add(text_box(&mut exe, 36));
-        if button(ui, "Browse").clicked() {
-            if let Some(path) = rfd::FileDialog::new().pick_file() {
-                exe = path.to_string_lossy().to_string();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if button(ui, "Browse").clicked() {
+                if let Some(path) = rfd::FileDialog::new().pick_file() {
+                    exe = path.to_string_lossy().to_string();
+                }
             }
         }
     });

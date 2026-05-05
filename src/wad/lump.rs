@@ -1,6 +1,7 @@
 // ABOUTME: Top-level WAD container — owns file bytes and the directory, exposes lump lookup.
 // ABOUTME: Map loading walks the directory for the named map header and the 10 lumps that follow.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 use super::header::{LumpEntry, WadHeader};
@@ -23,6 +24,7 @@ pub struct Wad {
 }
 
 impl Wad {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, WadError> {
         let bytes = std::fs::read(path)?;
         Self::from_bytes(bytes)

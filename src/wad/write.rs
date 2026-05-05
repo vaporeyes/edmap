@@ -1,14 +1,16 @@
 // ABOUTME: WAD writer — serializes MapData back into DOOM map lumps and assembles PWAD bytes.
 // ABOUTME: Two modes: fresh (one map only) and preserve (keep other lumps from a source Wad).
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
-use super::header::LumpEntry;
 use super::map::{LineDef, MapData, Sector, SideDef, Thing, Vertex};
+#[cfg(not(target_arch = "wasm32"))]
 use super::WadError;
 use super::Wad;
 
 /// 8-byte uppercase NUL-padded lump name.
+#[cfg(not(target_arch = "wasm32"))]
 fn name_bytes(name: &str) -> [u8; 8] {
     let mut buf = [0u8; 8];
     let bytes = name.as_bytes();
@@ -17,11 +19,13 @@ fn name_bytes(name: &str) -> [u8; 8] {
     buf
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn write_str8(out: &mut Vec<u8>, name: &str) {
     out.extend_from_slice(&name_bytes(name));
 }
 
 /// Single lump in the directory.
+#[cfg(not(target_arch = "wasm32"))]
 struct OutLump {
     name: String,
     bytes: Vec<u8>,
@@ -32,6 +36,7 @@ struct OutLump {
 /// VERTEXES, SEGS, SSECTORS, NODES, SECTORS, BLOCKMAP, REJECT. We emit only
 /// the editor-managed five; nodes-builder lumps are absent (a node builder
 /// can fill them in after).
+#[cfg(not(target_arch = "wasm32"))]
 fn serialize_map_lumps(map: &MapData) -> Vec<OutLump> {
     let mut things = Vec::with_capacity(map.things.len() * Thing::SIZE);
     for t in &map.things {
@@ -90,6 +95,7 @@ fn serialize_map_lumps(map: &MapData) -> Vec<OutLump> {
 }
 
 /// Build the full PWAD binary for a flat list of lumps. Caller orders them.
+#[cfg(not(target_arch = "wasm32"))]
 fn build_pwad(lumps: &[OutLump]) -> Vec<u8> {
     let mut out = Vec::new();
 
@@ -123,6 +129,7 @@ fn build_pwad(lumps: &[OutLump]) -> Vec<u8> {
 }
 
 /// Produce a PWAD that contains *only* the given map.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn pwad_with_one_map(map: &MapData) -> Vec<u8> {
     let mut lumps = vec![OutLump { name: map.name.clone(), bytes: Vec::new() }];
     lumps.append(&mut serialize_map_lumps(map));
@@ -133,6 +140,7 @@ pub fn pwad_with_one_map(map: &MapData) -> Vec<u8> {
 /// with `map.name` (the map marker plus the contiguous run of recognized map
 /// lumps that follow it). Then appends the freshly-serialized map at the end.
 /// This is what F2 Save uses when you've loaded an existing PWAD.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn pwad_preserving_others(src: &Wad, map: &MapData) -> Vec<u8> {
     // Find the map marker and the contiguous run of map lumps to skip.
     let mut skip = std::collections::HashSet::new();
@@ -171,6 +179,7 @@ pub fn pwad_preserving_others(src: &Wad, map: &MapData) -> Vec<u8> {
     build_pwad(&lumps)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn is_map_lump(name: &str) -> bool {
     matches!(
         name,
@@ -190,6 +199,7 @@ fn is_map_lump(name: &str) -> bool {
 /// Convenience: build PWAD bytes (preserving src lumps if provided) and write to disk.
 /// Also writes a `.bak` copy of the existing file (if any) before overwriting,
 /// matching Doom Builder's default safety behavior.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn save_map_to_path(
     path: impl AsRef<Path>,
     src: Option<&Wad>,

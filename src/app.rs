@@ -28,6 +28,11 @@ use crate::theme;
 pub use state::{EditorState, SelectionMode};
 use textures::TextureBank;
 
+/// Commands sent from async background tasks (like file pickers) to the main loop.
+pub enum AsyncCommand {
+    LoadWad { name: String, bytes: Vec<u8> },
+}
+
 pub struct EdMapApp {
     state: EditorState,
     /// Texture bank rebuilt whenever the active WAD changes. Keyed by wad path.
@@ -38,18 +43,24 @@ pub struct EdMapApp {
     /// so it can be cloned into the egui_glow PaintCallback closure (which
     /// requires Send + Sync + 'static).
     view3d_gl: std::sync::Arc<std::sync::Mutex<view3d_gl::Renderer3D>>,
+    /// Channel for receiving results from async operations (WASM file picker).
+    tx: std::sync::mpsc::Sender<AsyncCommand>,
+    rx: std::sync::mpsc::Receiver<AsyncCommand>,
 }
 
 impl EdMapApp {
     pub fn new() -> Self {
         let mut state = EditorState::default();
         state.config = config::EdMapConfig::load();
+        let (tx, rx) = std::sync::mpsc::channel();
         Self {
             state,
             bank: TextureBank::default(),
             bank_for_path: None,
             mem_probe: mem_probe::MemProbe::new(),
             view3d_gl: std::sync::Arc::new(std::sync::Mutex::new(view3d_gl::Renderer3D::new())),
+            tx,
+            rx,
         }
     }
 
@@ -63,11 +74,54 @@ impl EdMapApp {
         };
         self.bank_for_path = self.state.wad_path.clone();
     }
+
+    fn handle_async_commands(&mut self) {
+        while let Ok(cmd) = self.rx.try_recv() {
+            match cmd {
+                AsyncCommand::LoadWad { name, bytes } => {
+                    if let Ok(wad) = crate::wad::Wad::from_bytes(bytes) {
+                        let maps = wad.map_names();
+                        self.state.wad_path = Some(std::path::PathBuf::from(name));
+                        self.state.wad = Some(wad);
+                        self.state.map = None;
+                        self.state.selection.clear();
+                        self.state.status_message = None;
+                        self.state.is_dirty = false;
+                        
+                        if maps.len() == 1 {
+                            commands::load_map_from_wad(&mut self.state, &maps[0]);
+                        } else if maps.len() > 1 {
+                            self.state.dialog = Some(crate::app::state::Dialog::OpenMapPicker {
+                                maps,
+                                selected: 0,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        for file in dropped {
+            if let Some(bytes) = file.bytes {
+                // We treat a drop as a LoadWad command.
+                let name = file.name.clone();
+                let _ = self.tx.send(AsyncCommand::LoadWad { 
+                    name, 
+                    bytes: bytes.to_vec() 
+                });
+            }
+        }
+    }
 }
 
 impl eframe::App for EdMapApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        keybindings::dispatch(ctx, &mut self.state);
+        self.handle_async_commands();
+        self.handle_dropped_files(ctx);
+        keybindings::dispatch(ctx, &mut self.state, &self.tx);
         self.refresh_bank_if_needed();
         self.mem_probe.refresh_if_due();
         title_bar(ctx);
@@ -94,7 +148,7 @@ impl eframe::App for EdMapApp {
 
         // Cascading menu bar lives across the top of the viewport row, sourced from
         // sidebar state so we can keep menu open across frames.
-        menu::draw_open_menu(ctx, &mut self.state);
+        menu::draw_open_menu(ctx, &mut self.state, &self.tx);
         // Texture viewer (F10) — drawn before modals so dialogs from it overlay correctly.
         viewer::draw(ctx, &mut self.state, &mut self.bank);
         // Modals draw last so they're above everything else.

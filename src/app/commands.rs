@@ -259,6 +259,7 @@ pub fn snap_drag_delta(state: &mut EditorState, delta_world: egui::Vec2) -> (i32
 
 /// Save the current map back to its source PWAD path. Refuses to write to an
 /// IWAD; falls through to Save-As when no path is set yet.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn save_map(state: &mut EditorState) {
     let Some(map) = state.map.as_ref() else {
         state.dialog = Some(Dialog::Notice {
@@ -304,7 +305,16 @@ pub fn save_map(state: &mut EditorState) {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn save_map(state: &mut EditorState) {
+    state.dialog = Some(Dialog::Notice {
+        title: "Save".into(),
+        message: "Saving is not yet supported in the web version.".into(),
+    });
+}
+
 /// Prompt for a target path with the native picker and save the map there.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn save_map_as(state: &mut EditorState) {
     let Some(map) = state.map.as_ref() else {
         state.dialog = Some(Dialog::Notice {
@@ -343,11 +353,22 @@ pub fn save_map_as(state: &mut EditorState) {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn save_map_as(state: &mut EditorState) {
+    state.dialog = Some(Dialog::Notice {
+        title: "Save As".into(),
+        message: "Saving is not yet supported in the web version.".into(),
+    });
+}
+
 /// Run an action that was queued behind the Save warning dialog.
 pub fn run_pending(state: &mut EditorState, action: &super::state::PendingAction) {
     use super::state::PendingAction;
     match action {
-        PendingAction::Quit => std::process::exit(0),
+        PendingAction::Quit => {
+            #[cfg(not(target_arch = "wasm32"))]
+            std::process::exit(0);
+        }
         PendingAction::NewMap => new_map(state),
         PendingAction::OpenWad => {
             // Caller (menu/keybinding) reroutes through the picker on the next click.
@@ -2948,30 +2969,41 @@ pub fn save_selection_as_prefab(state: &mut EditorState) {
         v.y = v.y.saturating_sub(cy);
     }
 
-    let prefab = PrefabFile { version: 1, vertices, linedefs, sidedefs, sectors };
-    let Some(path) = rfd::FileDialog::new()
-        .add_filter("EdMap Prefab", &["epfab"])
-        .set_file_name("prefab.epfab")
-        .save_file()
-    else {
-        return;
-    };
-    match serde_json::to_string_pretty(&prefab) {
-        Ok(json) => match std::fs::write(&path, json) {
-            Ok(()) => state.status_message = Some(format!("Saved prefab to {}", path.display())),
+    let _prefab = PrefabFile { version: 1, vertices, linedefs, sidedefs, sectors };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("EdMap Prefab", &["epfab"])
+            .set_file_name("prefab.epfab")
+            .save_file()
+        else {
+            return;
+        };
+        match serde_json::to_string_pretty(&_prefab) {
+            Ok(json) => match std::fs::write(&path, json) {
+                Ok(()) => state.status_message = Some(format!("Saved prefab to {}", path.display())),
+                Err(e) => state.dialog = Some(Dialog::Notice {
+                    title: "Save prefab".into(),
+                    message: format!("Write failed: {e}"),
+                }),
+            },
             Err(e) => state.dialog = Some(Dialog::Notice {
                 title: "Save prefab".into(),
-                message: format!("Write failed: {e}"),
+                message: format!("Serialize failed: {e}"),
             }),
-        },
-        Err(e) => state.dialog = Some(Dialog::Notice {
-            title: "Save prefab".into(),
-            message: format!("Serialize failed: {e}"),
-        }),
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        state.dialog = Some(Dialog::Notice {
+            title: "Save Prefab".into(),
+            message: "Saving prefabs is not yet supported in the web version.".into(),
+        });
     }
 }
 
 /// Load a .epfab file and place it at the cursor.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn load_prefab_at_cursor(state: &mut EditorState) {
     let Some(path) = rfd::FileDialog::new()
         .add_filter("EdMap Prefab", &["epfab"])
@@ -3037,7 +3069,16 @@ pub fn load_prefab_at_cursor(state: &mut EditorState) {
     ));
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn load_prefab_at_cursor(state: &mut EditorState) {
+    state.dialog = Some(Dialog::Notice {
+        title: "Load Prefab".into(),
+        message: "Prefab loading is not yet supported in the web version.".into(),
+    });
+}
+
 /// Render the current map to a PNG with the given options and prompt for a save path.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn export_picture(state: &mut EditorState, opts: super::export_picture::ExportOptions) {
     let Some(map) = state.map.as_ref() else {
         state.dialog = Some(Dialog::Notice {
@@ -3077,6 +3118,14 @@ pub fn export_picture(state: &mut EditorState, opts: super::export_picture::Expo
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn export_picture(state: &mut EditorState, _opts: super::export_picture::ExportOptions) {
+    state.dialog = Some(Dialog::Notice {
+        title: "Export Picture".into(),
+        message: "Picture export is not yet supported in the web version.".into(),
+    });
+}
+
 /// Open the Test Map Settings dialog so the user can configure the source-port
 /// executable and the args template.
 pub fn open_test_map_settings(state: &mut EditorState) {
@@ -3089,6 +3138,7 @@ pub fn open_test_map_settings(state: &mut EditorState) {
 
 /// Save the current map to a temp PWAD and launch the configured source-port.
 /// If no executable is configured yet, opens the settings dialog instead.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn test_map(state: &mut EditorState) {
     let Some(map) = state.map.as_ref() else {
         state.dialog = Some(Dialog::Notice {
@@ -3149,12 +3199,20 @@ pub fn test_map(state: &mut EditorState) {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn test_map(state: &mut EditorState) {
+    state.dialog = Some(Dialog::Notice {
+        title: "Test Map".into(),
+        message: "Launching external games is not supported in the web version.".into(),
+    });
+}
+
 /// Build a brand-new map: a single 256x256 square room centered at the origin
 /// with a Player 1 start in the middle. Stock vanilla DOOM textures are used
 /// so the resulting PWAD plays in any IWAD that has them.
 fn starter_map() -> crate::wad::MapData {
     use crate::wad::{LineDef, MapData, Sector, SideDef, Thing, Vertex};
-
+    
     // Vertices in CCW order (Y-up): BL, TL, TR, BR. With this winding, each
     // linedef's right-perpendicular faces the room interior, so single-sided
     // fronts point inward.
@@ -3219,6 +3277,26 @@ fn starter_map() -> crate::wad::MapData {
         sidedefs,
         sectors,
         things,
+    }
+}
+
+/// Helper to load a named map from the currently loaded WAD and reset editor state.
+pub fn load_map_from_wad(state: &mut EditorState, map_name: &str) {
+    if let Some(wad) = &state.wad {
+        match wad.load_map(map_name) {
+            Ok(m) => {
+                state.map = Some(m);
+                center_map(state);
+                state.undo_baseline = state.map.clone();
+                state.status_message = Some(format!("Loaded {}", map_name));
+            }
+            Err(e) => {
+                state.dialog = Some(Dialog::Notice {
+                    title: "Load Map".into(),
+                    message: format!("Failed to load {}: {}", map_name, e),
+                });
+            }
+        }
     }
 }
 

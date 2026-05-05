@@ -1,13 +1,14 @@
 // ABOUTME: Real memory measurements for the sidebar's "free" line — system
 // ABOUTME: free RAM (refreshed periodically) and in-memory map data size.
 
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use crate::wad::{LineDef, MapData, Sector, SideDef, Thing, Vertex};
 
 /// Owns a sysinfo::System instance and re-refreshes its memory stats every
 /// REFRESH_INTERVAL. Cheap to call every frame; only does work occasionally.
 pub struct MemProbe {
+    #[cfg(not(target_arch = "wasm32"))]
     sys: sysinfo::System,
     last_refresh: Instant,
     last_free_kb: u64,
@@ -17,6 +18,7 @@ pub struct MemProbe {
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 impl MemProbe {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Self {
         let mut sys = sysinfo::System::new();
         sys.refresh_memory();
@@ -30,11 +32,23 @@ impl MemProbe {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub fn new() -> Self {
+        Self {
+            last_refresh: Instant::now(),
+            last_free_kb: 0,
+            last_total_kb: 0,
+        }
+    }
+
     pub fn refresh_if_due(&mut self) {
         if self.last_refresh.elapsed() >= REFRESH_INTERVAL {
-            self.sys.refresh_memory();
-            self.last_free_kb = self.sys.available_memory() / 1024;
-            self.last_total_kb = self.sys.total_memory() / 1024;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.sys.refresh_memory();
+                self.last_free_kb = self.sys.available_memory() / 1024;
+                self.last_total_kb = self.sys.total_memory() / 1024;
+            }
             self.last_refresh = Instant::now();
         }
     }

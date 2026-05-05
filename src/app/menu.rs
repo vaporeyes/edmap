@@ -5,6 +5,7 @@ use eframe::egui::{self, Color32};
 
 use super::state::EditorState;
 use crate::theme;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::wad::Wad;
 
 pub const MENU_ORDER: &[&str] = &[
@@ -21,7 +22,7 @@ pub const MENU_ORDER: &[&str] = &[
 
 /// Render the cascading panel for whichever menu is currently open.
 /// Anchored to the right edge of the sidebar — matches the screenshot.
-pub fn draw_open_menu(ctx: &egui::Context, state: &mut EditorState) {
+pub fn draw_open_menu(ctx: &egui::Context, state: &mut EditorState, tx: &std::sync::mpsc::Sender<crate::app::AsyncCommand>) {
     let Some(open) = state.open_menu else { return };
 
     let area_pos = egui::pos2(160.0, 16.0);
@@ -48,7 +49,7 @@ pub fn draw_open_menu(ctx: &egui::Context, state: &mut EditorState) {
                     for (label, hotkey) in items {
                         let resp = menu_row(ui, label, hotkey);
                         if resp.clicked() {
-                            handle_command(state, open, label);
+                            handle_command(state, open, label, tx);
                             close_after = true;
                         }
                     }
@@ -219,7 +220,7 @@ pub fn items_for(menu: &str) -> &'static [(&'static str, &'static str)] {
     }
 }
 
-pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
+pub fn handle_command(state: &mut EditorState, menu: &str, item: &str, tx: &std::sync::mpsc::Sender<crate::app::AsyncCommand>) {
     use super::state::Dialog;
     match (menu, item) {
         ("Info", "About EdMap") => state.dialog = Some(Dialog::About),
@@ -234,7 +235,7 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
         }
         ("File (map)", "Open map file") => {
             if super::commands::dirty_guard(state, super::state::PendingAction::OpenWad) {
-                open_wad_picker(state);
+                open_wad_picker(state, tx);
             }
         }
         ("File (map)", "Load PWAD map") => {
@@ -263,6 +264,7 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
         ("File (map)", "Test map settings") => super::commands::open_test_map_settings(state),
         ("File (map)", "Quit to DOS") => {
             if super::commands::dirty_guard(state, super::state::PendingAction::Quit) {
+                #[cfg(not(target_arch = "wasm32"))]
                 std::process::exit(0);
             }
         }
@@ -272,7 +274,7 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
         ("WAD list", "Load prefab") => super::commands::load_prefab_at_cursor(state),
         ("WAD list", "Add PWAD file") => {
             if super::commands::dirty_guard(state, super::state::PendingAction::OpenWad) {
-                open_wad_picker(state);
+                open_wad_picker(state, tx);
             }
         }
         ("Edit", "Next object") => super::commands::cycle_selection(state, 1),
@@ -448,7 +450,8 @@ pub fn handle_command(state: &mut EditorState, menu: &str, item: &str) {
     }
 }
 
-fn open_wad_picker(state: &mut EditorState) {
+#[cfg(not(target_arch = "wasm32"))]
+fn open_wad_picker(state: &mut EditorState, _tx: &std::sync::mpsc::Sender<crate::app::AsyncCommand>) {
     let Some(path) = rfd::FileDialog::new()
         .add_filter("WAD files", &["wad", "WAD"])
         .pick_file()
@@ -490,6 +493,22 @@ fn open_wad_picker(state: &mut EditorState) {
             state.status_message = Some(format!("PWAD Load: {e}"));
         }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn open_wad_picker(_state: &mut EditorState, tx: &std::sync::mpsc::Sender<crate::app::AsyncCommand>) {
+    let tx = tx.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let file = rfd::AsyncFileDialog::new()
+            .add_filter("WAD files", &["wad", "WAD"])
+            .pick_file()
+            .await;
+        if let Some(file) = file {
+            let bytes = file.read().await;
+            let name = file.file_name();
+            let _ = tx.send(crate::app::AsyncCommand::LoadWad { name, bytes });
+        }
+    });
 }
 
 fn compute_map_center(state: &EditorState) -> egui::Pos2 {

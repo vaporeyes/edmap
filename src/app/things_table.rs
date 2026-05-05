@@ -45,9 +45,9 @@ pub fn category_of(thing_type: u16) -> Category {
         // Keys
         5 | 6 | 13 | 38 | 39 | 40 => Category::Key,
         // Obstacles
-        25..=28 | 29..=37 | 41..=43 | 44..=48 | 54..=57 | 70 | 72..=82 => Category::Obstacle,
+        25..=28 | 29..=33 | 36..=37 | 41..=43 | 44..=48 | 54..=57 | 70 | 72..=82 => Category::Obstacle,
         // Light Sources
-        2028 | 34 | 35 => Category::Light,
+        34 | 35 | 2028 => Category::Light,
         // Everything else → Decoration
         _ => Category::Decoration,
     }

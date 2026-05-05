@@ -1,6 +1,7 @@
 // ABOUTME: Persistent user preferences (test-map exe/args template) stored as JSON.
 // ABOUTME: Loaded at app start, saved when the Test Map Settings dialog closes.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -63,21 +64,34 @@ pub struct EdMapConfig {
     pub view3d: View3DConfig,
 }
 
-/// Returns the on-disk config path, or None if HOME is not set.
+#[cfg(not(target_arch = "wasm32"))]
 fn config_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(PathBuf::from(home).join(".config").join("edmap").join("config.json"))
 }
 
 impl EdMapConfig {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load() -> Self {
         let Some(path) = config_path() else { return Self::default() };
         let Ok(bytes) = std::fs::read(&path) else { return Self::default() };
         serde_json::from_slice(&bytes).unwrap_or_default()
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub fn load() -> Self {
+        let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
+            return Self::default();
+        };
+        match storage.get_item("edmap_config") {
+            Ok(Some(json)) => serde_json::from_str(&json).unwrap_or_default(),
+            _ => Self::default(),
+        }
+    }
+
     /// Best-effort save. Errors are reported via the returned Result so the
     /// caller can surface them in the status bar.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn save(&self) -> std::io::Result<()> {
         let Some(path) = config_path() else {
             return Err(std::io::Error::new(
@@ -91,6 +105,18 @@ impl EdMapConfig {
         let json = serde_json::to_vec_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(&path, json)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn save(&self) -> std::io::Result<()> {
+        let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "no local storage"));
+        };
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        storage.set_item("edmap_config", &json)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "failed to save to local storage"))?;
+        Ok(())
     }
 }
 

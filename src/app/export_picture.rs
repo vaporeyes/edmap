@@ -36,21 +36,31 @@ pub enum ExportError {
     Encode(String),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 type Rgb = [u8; 3];
+#[cfg(not(target_arch = "wasm32"))]
 const BG: Rgb = [0, 0, 0];
+#[cfg(not(target_arch = "wasm32"))]
 const GRID: Rgb = [0x40, 0x40, 0x40];
+#[cfg(not(target_arch = "wasm32"))]
 const LINEDEF_NORMAL: Rgb = [0xC0, 0xC0, 0xC0];
+#[cfg(not(target_arch = "wasm32"))]
 const LINEDEF_TWO_SIDED: Rgb = [0x80, 0x80, 0x80];
+#[cfg(not(target_arch = "wasm32"))]
 const VERTEX_DOT: Rgb = [0xFF, 0xFF, 0xFF];
+#[cfg(not(target_arch = "wasm32"))]
 const THING_MARK: Rgb = [0x55, 0xFF, 0x55];
+#[cfg(not(target_arch = "wasm32"))]
 const BBOX: Rgb = [0x55, 0x55, 0x55];
 
+#[cfg(not(target_arch = "wasm32"))]
 struct Canvas {
     width: u32,
     height: u32,
     pixels: Vec<u8>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Canvas {
     fn new(width: u32, height: u32, fill: Rgb) -> Self {
         let mut pixels = Vec::with_capacity((width * height * 3) as usize);
@@ -132,6 +142,7 @@ impl Canvas {
 }
 
 /// Render the map at the given size and return PNG bytes.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn render(map: &MapData, opts: &ExportOptions) -> Result<Vec<u8>, ExportError> {
     if map.vertices.is_empty() {
         return Err(ExportError::EmptyMap);

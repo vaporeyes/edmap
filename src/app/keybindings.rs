@@ -4,7 +4,6 @@
 use eframe::egui::{self, Key, Modifiers};
 
 use super::commands;
-use super::menu::handle_command;
 use super::state::{EditorState, SelectionMode};
 
 /// Map of menu-style hotkey strings (from items_for) to (Modifiers, Key).
@@ -57,7 +56,7 @@ fn parse_hotkey(s: &str) -> Option<(Modifiers, Key)> {
 
 /// Walk every menu and every item; if the item has a hotkey and the hotkey is
 /// pressed this frame, dispatch the command. Single source of truth: the menu spec.
-pub fn dispatch(ctx: &egui::Context, state: &mut EditorState) {
+pub fn dispatch(ctx: &egui::Context, state: &mut EditorState, tx: &std::sync::mpsc::Sender<crate::app::AsyncCommand>) {
     let menus = super::menu::MENU_ORDER;
     let mut to_run: Option<(&'static str, &'static str)> = None;
     ctx.input(|input| {
@@ -213,7 +212,7 @@ pub fn dispatch(ctx: &egui::Context, state: &mut EditorState) {
     });
 
     if let Some((menu, label)) = to_run {
-        handle_command(state, menu, label);
+        super::menu::handle_command(state, menu, label, tx);
     }
 }
 

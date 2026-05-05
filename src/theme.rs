@@ -207,18 +207,29 @@ fn install_fonts(ctx: &egui::Context) {
 /// Look for an asset file at runtime in a few candidate directories so the
 /// app works whether you run it via `cargo run` or from the built binary.
 fn read_asset(name: &str) -> Option<Vec<u8>> {
-    use std::path::PathBuf;
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let candidates = [
-        PathBuf::from(manifest_dir).join("assets").join(name),
-        PathBuf::from("assets").join(name),
-        PathBuf::from("../assets").join(name),
-        PathBuf::from("./src/assets").join(name),
-    ];
-    for path in &candidates {
-        if let Ok(bytes) = std::fs::read(path) {
-            return Some(bytes);
+    #[cfg(target_arch = "wasm32")]
+    {
+        match name {
+            "PxPlus_IBM_VGA_9x16.ttf" => Some(include_bytes!("../assets/PxPlus_IBM_VGA_9x16.ttf").to_vec()),
+            "roboto.ttf" => Some(include_bytes!("../assets/roboto.ttf").to_vec()),
+            _ => None,
         }
     }
-    None
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::path::PathBuf;
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let candidates = [
+            PathBuf::from(manifest_dir).join("assets").join(name),
+            PathBuf::from("assets").join(name),
+            PathBuf::from("../assets").join(name),
+            PathBuf::from("./src/assets").join(name),
+        ];
+        for path in &candidates {
+            if let Ok(bytes) = std::fs::read(path) {
+                return Some(bytes);
+            }
+        }
+        None
+    }
 }
