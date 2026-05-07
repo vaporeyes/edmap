@@ -10,7 +10,7 @@ const FLOATS_PER_COLOR_VERTEX: usize = 7;
 /// Textured wall vertex: position (3) + UV (2) + brightness (1) = 6 f32.
 const FLOATS_PER_WALL_VERTEX: usize = 6;
 
-const COLOR_VS: &str = r#"#version 300 es
+const COLOR_VS_BODY: &str = r#"
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec4 in_color;
 uniform mat4 u_view_proj;
@@ -20,8 +20,7 @@ void main() {
     gl_Position = u_view_proj * vec4(in_pos, 1.0);
 }
 "#;
-const COLOR_FS: &str = r#"#version 300 es
-precision mediump float;
+const COLOR_FS_BODY: &str = r#"
 in vec4 v_color;
 out vec4 frag;
 void main() {
@@ -29,7 +28,7 @@ void main() {
 }
 "#;
 
-const WALL_VS: &str = r#"#version 300 es
+const WALL_VS_BODY: &str = r#"
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec2 in_uv_px;
 layout(location = 2) in float in_brightness;
@@ -42,8 +41,7 @@ void main() {
     gl_Position = u_view_proj * vec4(in_pos, 1.0);
 }
 "#;
-const WALL_FS: &str = r#"#version 300 es
-precision mediump float;
+const WALL_FS_BODY: &str = r#"
 in vec2 v_uv_px;
 in float v_brightness;
 uniform sampler2D u_tex;
@@ -58,6 +56,16 @@ void main() {
     frag = vec4(tx.rgb * v_brightness, 1.0);
 }
 "#;
+
+#[cfg(target_arch = "wasm32")]
+fn get_vs_header() -> &'static str { "#version 300 es\n" }
+#[cfg(not(target_arch = "wasm32"))]
+fn get_vs_header() -> &'static str { "#version 330 core\n" }
+
+#[cfg(target_arch = "wasm32")]
+fn get_fs_header() -> &'static str { "#version 300 es\nprecision mediump float;\n" }
+#[cfg(not(target_arch = "wasm32"))]
+fn get_fs_header() -> &'static str { "#version 330 core\n" }
 
 /// One wall draw call within the wall vertex buffer, keyed by texture id.
 #[derive(Clone)]
@@ -283,13 +291,24 @@ impl Renderer3D {
                 gl.uniform_1_i32(Some(&inner.u_wall_tex), 0);
                 gl.active_texture(glow::TEXTURE0);
                 gl.bind_vertex_array(Some(inner.vao_walls));
+                
+                let mut drawn_batches = 0;
+                let mut missing_tex_batches = 0;
+
                 for batch in &self.wall_batches {
                     let Some(&(tex, w, h)) = self.wall_textures.get(&batch.texture_id) else {
+                        missing_tex_batches += 1;
                         continue; // texture not yet uploaded — skip this batch silently
                     };
                     gl.bind_texture(glow::TEXTURE_2D, Some(tex));
                     gl.uniform_2_f32(Some(&inner.u_wall_tex_size), w as f32, h as f32);
                     gl.draw_arrays(glow::TRIANGLES, batch.vertex_offset, batch.vertex_count);
+                    drawn_batches += 1;
+                }
+
+                if drawn_batches == 0 && !self.wall_batches.is_empty() {
+                    #[cfg(target_arch = "wasm32")]
+                    web_sys::console::log_1(&format!("3D Error: {} wall batches missing textures!", missing_tex_batches).into());
                 }
             }
 
@@ -335,17 +354,29 @@ impl Renderer3D {
             gl.use_program(None);
             gl.disable(glow::DEPTH_TEST);
             gl.disable(glow::CULL_FACE);
+            gl.disable(glow::SCISSOR_TEST);
         }
     }
 }
 
 impl Inner {
     unsafe fn new(gl: &glow::Context) -> Self {
-        let color_program = link_program(gl, COLOR_VS, COLOR_FS);
+        let vs_h = get_vs_header();
+        let fs_h = get_fs_header();
+
+        let color_program = link_program(
+            gl,
+            &format!("{}{}", vs_h, COLOR_VS_BODY),
+            &format!("{}{}", fs_h, COLOR_FS_BODY),
+        );
         let u_color_view_proj = gl
             .get_uniform_location(color_program, "u_view_proj")
             .expect("u_view_proj uniform missing on color shader");
-        let wall_program = link_program(gl, WALL_VS, WALL_FS);
+        let wall_program = link_program(
+            gl,
+            &format!("{}{}", vs_h, WALL_VS_BODY),
+            &format!("{}{}", fs_h, WALL_FS_BODY),
+        );
         let u_wall_view_proj = gl
             .get_uniform_location(wall_program, "u_view_proj")
             .expect("u_view_proj uniform missing on wall shader");

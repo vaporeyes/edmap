@@ -28,10 +28,13 @@ use crate::theme;
 pub use state::{EditorState, SelectionMode};
 use textures::TextureBank;
 
-/// Commands sent from async background tasks (like file pickers) to the main loop.
+/// Channel for receiving results from async operations (WASM file picker).
 pub enum AsyncCommand {
     LoadWad { name: String, bytes: Vec<u8> },
 }
+
+#[cfg(target_arch = "wasm32")]
+const DEMO_WAD: &[u8] = include_bytes!("../maps/infinity/INFINITY.WAD");
 
 pub struct EdMapApp {
     state: EditorState,
@@ -53,6 +56,15 @@ impl EdMapApp {
         let mut state = EditorState::default();
         state.config = config::EdMapConfig::load();
         let (tx, rx) = std::sync::mpsc::channel();
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = tx.send(AsyncCommand::LoadWad {
+                name: "INFINITY.WAD (demo)".into(),
+                bytes: DEMO_WAD.to_vec(),
+            });
+        }
+
         Self {
             state,
             bank: TextureBank::default(),
@@ -63,6 +75,7 @@ impl EdMapApp {
             rx,
         }
     }
+
 
     fn refresh_bank_if_needed(&mut self) {
         if self.state.wad_path == self.bank_for_path {
@@ -79,8 +92,14 @@ impl EdMapApp {
         while let Ok(cmd) = self.rx.try_recv() {
             match cmd {
                 AsyncCommand::LoadWad { name, bytes } => {
-                    if let Ok(wad) = crate::wad::Wad::from_bytes(bytes) {
+                    // Merge a tiny built-in IWAD so PWADs that omit PLAYPAL /
+                    // PNAMES / TEXTURE1 / F_/S_ markers still load. Primary
+                    // (the user's WAD) wins on name collisions.
+                    let merged = crate::wad::merge_wads(&bytes, &crate::minimal_iwad::bytes())
+                        .unwrap_or(bytes);
+                    if let Ok(wad) = crate::wad::Wad::from_bytes(merged) {
                         let maps = wad.map_names();
+                        let is_demo = name.contains("(demo)");
                         self.state.wad_path = Some(std::path::PathBuf::from(name));
                         self.state.wad = Some(wad);
                         self.state.map = None;
@@ -91,10 +110,23 @@ impl EdMapApp {
                         if maps.len() == 1 {
                             commands::load_map_from_wad(&mut self.state, &maps[0]);
                         } else if maps.len() > 1 {
-                            self.state.dialog = Some(crate::app::state::Dialog::OpenMapPicker {
-                                maps,
-                                selected: 0,
-                            });
+                            let mut map_to_load = None;
+                            if is_demo {
+                                if maps.contains(&"E1M1".to_string()) {
+                                    map_to_load = Some("E1M1");
+                                } else if maps.contains(&"MAP01".to_string()) {
+                                    map_to_load = Some("MAP01");
+                                }
+                            }
+
+                            if let Some(map_name) = map_to_load {
+                                commands::load_map_from_wad(&mut self.state, map_name);
+                            } else {
+                                self.state.dialog = Some(crate::app::state::Dialog::OpenMapPicker {
+                                    maps,
+                                    selected: 0,
+                                });
+                            }
                         }
                     }
                 }
@@ -140,7 +172,7 @@ impl eframe::App for EdMapApp {
             .frame(egui::Frame::none().fill(theme::VIEWPORT_BG))
             .show(ctx, |ui| {
                 if self.state.view3d_open {
-                    view3d::draw(ui, &mut self.state, &self.bank, self.view3d_gl.clone());
+                    view3d::draw(ui, &mut self.state, &mut self.bank, self.view3d_gl.clone());
                 } else {
                     viewport::draw(ui, &mut self.state, &mut self.bank);
                 }

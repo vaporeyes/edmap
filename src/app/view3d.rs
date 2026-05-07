@@ -40,7 +40,7 @@ impl Cam3D {
 pub fn draw(
     ui: &mut egui::Ui,
     state: &mut EditorState,
-    bank: &TextureBank,
+    bank: &mut TextureBank,
     renderer: Arc<Mutex<Renderer3D>>,
 ) {
     let available = ui.available_rect_before_wrap();
@@ -92,8 +92,8 @@ pub fn draw(
                     pixels,
                     wrap: TexWrap::Repeat,
                 });
+                state.view3d_geom_cache.uploaded_textures.insert(id);
             }
-            state.view3d_geom_cache.uploaded_textures.insert(id);
         }
     }
 
@@ -101,7 +101,9 @@ pub fn draw(
     // textured batch map, then decode any sprite textures not yet uploaded.
     let mut sprite_by_tex: TexBatchMap = std::collections::HashMap::new();
     let mut sprite_picks: Vec<SpritePick> = Vec::new();
-    build_thing_sprite_batches(map, &state.thing_filter, &cam, &mut sprite_by_tex, &mut sprite_picks);
+    if let Some(wad) = state.wad.as_ref() {
+        build_thing_sprite_batches(map, &state.thing_filter, &cam, bank, wad, &mut sprite_by_tex, &mut sprite_picks);
+    }
     let (sprite_verts, sprite_batches, sprite_tex_names) = flatten_batches(sprite_by_tex);
     if let Some(wad) = state.wad.as_ref() {
         for (kind, name) in &sprite_tex_names {
@@ -117,8 +119,8 @@ pub fn draw(
                     pixels,
                     wrap: TexWrap::ClampToEdge,
                 });
+                state.view3d_geom_cache.uploaded_textures.insert(id);
             }
-            state.view3d_geom_cache.uploaded_textures.insert(id);
         }
     }
 
@@ -157,6 +159,12 @@ pub fn draw(
     let callback = egui::PaintCallback {
         rect: available,
         callback: Arc::new(egui_glow::CallbackFn::new(move |info, painter| {
+            if cb_data.wall_verts.is_empty() && cb_data.sprite_verts.is_empty() {
+                #[cfg(target_arch = "wasm32")]
+                web_sys::console::log_1(&"3D Error: Both wall_verts and sprite_verts are empty!".into());
+                #[cfg(not(target_arch = "wasm32"))]
+                eprintln!("3D Error: Both wall_verts and sprite_verts are empty!");
+            }
             let vp = info.viewport_in_pixels();
             let viewport = (vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px);
             if let Ok(mut r) = cb_data.renderer.lock() {
@@ -834,6 +842,26 @@ fn build_floors_ceilings_into(map: &MapData, by_tex: &mut TexBatchMap) {
             }
         }
 
+        // Robustness: if we found no outers (CCW) but found holes (CW), the
+        // sector is likely "inside out" (lines oriented CCW instead of CW).
+        // Promote the largest hole to an outer.
+        if outers.is_empty() && !holes.is_empty() {
+            let mut best: Option<(usize, f32)> = None;
+            for (hi, hole) in holes.iter().enumerate() {
+                let area = signed_area(hole).abs();
+                match best {
+                    None => best = Some((hi, area)),
+                    Some((_, a)) if area > a => best = Some((hi, area)),
+                    _ => {}
+                }
+            }
+            if let Some((hi, _)) = best {
+                let mut promoted = holes.remove(hi);
+                promoted.reverse();
+                outers.push(promoted);
+            }
+        }
+
         // Assign each hole to the smallest outer that contains it. (Smallest
         // so that nested cases like outer→hole→outer-island still work.)
         let mut holes_for: Vec<Vec<usize>> = vec![Vec::new(); outers.len()];
@@ -857,26 +885,32 @@ fn build_floors_ceilings_into(map: &MapData, by_tex: &mut TexBatchMap) {
             // Holes with no containing outer are dropped (malformed sector).
         }
 
-        for (oi, mut outer) in outers.into_iter().enumerate() {
-            // Splice each assigned hole into the outer polygon using a bridge
-            // edge from the hole's rightmost vertex to the closest visible
-            // outer vertex. After all holes are absorbed, the result is one
-            // simple polygon ready for ear clipping.
-            let mut sorted_holes: Vec<&Vec<(f32, f32)>> = holes_for[oi]
-                .iter()
-                .map(|&i| &holes[i])
-                .collect();
-            // Process rightmost holes first so earlier bridges stay valid.
-            sorted_holes.sort_by(|a, b| {
-                let ax = a.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max);
-                let bx = b.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max);
-                bx.partial_cmp(&ax).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            for hole in sorted_holes {
-                splice_hole(&mut outer, hole);
+        for (oi, outer) in outers.iter().enumerate() {
+            // Pack outer + holes into a single flat coordinate buffer for
+            // `earcutr`, which handles holes natively (no manual bridging).
+            // `hole_indices` are vertex offsets where each hole begins.
+            let mut data: Vec<f64> = Vec::with_capacity(
+                (outer.len() + holes_for[oi].iter().map(|&i| holes[i].len()).sum::<usize>()) * 2,
+            );
+            let mut points: Vec<(f32, f32)> = Vec::with_capacity(data.capacity() / 2);
+            for &(x, y) in outer {
+                data.push(x as f64);
+                data.push(y as f64);
+                points.push((x, y));
             }
-
-            let triangles = ear_clip(&outer);
+            let mut hole_indices: Vec<usize> = Vec::with_capacity(holes_for[oi].len());
+            for &hi in &holes_for[oi] {
+                hole_indices.push(points.len());
+                for &(x, y) in &holes[hi] {
+                    data.push(x as f64);
+                    data.push(y as f64);
+                    points.push((x, y));
+                }
+            }
+            let Ok(triangles) = earcutr::earcut(&data, &hole_indices, 2) else {
+                continue;
+            };
+            // earcutr returns flat indices: [i0,i1,i2, i0,i1,i2, ...]
             // FLAT textures are world-aligned 64×64 — UV at world (x, y) is
             // just (x, y) in pixel space; the wall shader normalizes by texture
             // size (64) and GL_REPEAT tiles across the floor.
@@ -884,8 +918,8 @@ fn build_floors_ceilings_into(map: &MapData, by_tex: &mut TexBatchMap) {
                 let entry = by_tex
                     .entry((TextureKind::Flat, floor_tex.clone()))
                     .or_default();
-                for &[i0, i1, i2] in &triangles {
-                    let (a, b, c) = (outer[i0], outer[i1], outer[i2]);
+                for tri in triangles.chunks_exact(3) {
+                    let (a, b, c) = (points[tri[0]], points[tri[1]], points[tri[2]]);
                     // Floor: CCW from above, normal up.
                     push_flat_triangle(entry, a, b, c, floor_h, brightness);
                 }
@@ -894,140 +928,14 @@ fn build_floors_ceilings_into(map: &MapData, by_tex: &mut TexBatchMap) {
                 let entry = by_tex
                     .entry((TextureKind::Flat, ceil_tex.clone()))
                     .or_default();
-                for &[i0, i1, i2] in &triangles {
-                    let (a, b, c) = (outer[i0], outer[i1], outer[i2]);
+                for tri in triangles.chunks_exact(3) {
+                    let (a, b, c) = (points[tri[0]], points[tri[1]], points[tri[2]]);
                     // Ceiling: reversed winding so normal points down.
                     push_flat_triangle(entry, a, c, b, ceil_h, brightness);
                 }
             }
         }
     }
-}
-
-/// Splice a hole loop into an outer loop using a bridge edge. Uses the canonical
-/// earcut-with-holes algorithm: rightmost hole vertex, ray-cast right to find
-/// the first outer edge, then pick a visible outer vertex (the edge endpoint
-/// or, if any reflex outer vertices sit inside the candidate triangle, the
-/// smallest-angle one). This avoids the bridge crossing other edges, which the
-/// previous closest-vertex heuristic produced for non-trivial sector shapes.
-fn splice_hole(outer: &mut Vec<(f32, f32)>, hole: &[(f32, f32)]) {
-    if hole.len() < 3 || outer.len() < 3 {
-        return;
-    }
-    let h_idx = rightmost_vertex(hole);
-    let m = hole[h_idx];
-    let Some(o_idx) = find_visible_outer_vertex(outer, m) else {
-        return;
-    };
-
-    // Build spliced polygon: outer[..=o_idx], hole rotated to start at h_idx
-    // (CW orientation preserved so it carves out the hole inside the CCW outer),
-    // hole[h_idx] again, outer[o_idx] again, outer[o_idx+1..]. The bridge edge
-    // is traversed twice (each direction), keeping the polygon simple.
-    let mut spliced: Vec<(f32, f32)> = Vec::with_capacity(outer.len() + hole.len() + 2);
-    spliced.extend_from_slice(&outer[..=o_idx]);
-    for k in 0..hole.len() {
-        spliced.push(hole[(h_idx + k) % hole.len()]);
-    }
-    spliced.push(m);
-    spliced.push(outer[o_idx]);
-    spliced.extend_from_slice(&outer[o_idx + 1..]);
-    *outer = spliced;
-}
-
-fn rightmost_vertex(poly: &[(f32, f32)]) -> usize {
-    let mut best = 0;
-    let mut best_x = poly[0].0;
-    for (i, p) in poly.iter().enumerate().skip(1) {
-        if p.0 > best_x {
-            best_x = p.0;
-            best = i;
-        }
-    }
-    best
-}
-
-/// Standard "find a mutually visible outer vertex" routine for earcut bridges.
-/// Returns the index of an outer vertex that can be connected to `m` by a
-/// straight segment that doesn't cross any other outer edge.
-fn find_visible_outer_vertex(outer: &[(f32, f32)], m: (f32, f32)) -> Option<usize> {
-    let n = outer.len();
-
-    // 1. Ray-cast from m in the +x direction. Find the closest outer edge
-    //    intersection strictly to the right of m on the line y = m.y.
-    let mut best_x = f32::INFINITY;
-    let mut best_edge: Option<usize> = None;
-    for i in 0..n {
-        let v1 = outer[i];
-        let v2 = outer[(i + 1) % n];
-        // Standard half-open crossing test (catches one endpoint, ignores the other).
-        let crosses = (v1.1 <= m.1 && v2.1 > m.1) || (v2.1 <= m.1 && v1.1 > m.1);
-        if !crosses {
-            continue;
-        }
-        let dy = v2.1 - v1.1;
-        if dy.abs() < f32::EPSILON {
-            continue;
-        }
-        let t = (m.1 - v1.1) / dy;
-        let ix = v1.0 + t * (v2.0 - v1.0);
-        if ix > m.0 && ix < best_x {
-            best_x = ix;
-            best_edge = Some(i);
-        }
-    }
-    let edge = best_edge?;
-
-    // 2. The edge endpoint with the larger x is the initial candidate (P).
-    let v1 = outer[edge];
-    let v2 = outer[(edge + 1) % n];
-    let (mut p_idx, mut p) = if v1.0 >= v2.0 {
-        (edge, v1)
-    } else {
-        ((edge + 1) % n, v2)
-    };
-
-    // 3. If no reflex outer vertex lies inside triangle (m, intersection, p),
-    //    p is directly visible. Otherwise find the reflex vertex inside that
-    //    triangle whose angle to the m→p direction is smallest (and tie-break
-    //    by closest distance), and use it instead.
-    let inter = (best_x, m.1);
-    let mut best_tan = ((p.1 - m.1).abs() / (p.0 - m.0).max(f32::EPSILON)).abs();
-    let mut best_dist2 = sqr_dist(p, m);
-    let mut found_reflex = false;
-
-    for (i, &v) in outer.iter().enumerate() {
-        if i == p_idx {
-            continue;
-        }
-        if !point_in_tri(v, m, inter, p) {
-            continue;
-        }
-        // Reflex test: with CCW outer winding, a reflex (concave) vertex turns right.
-        let prev = outer[(i + n - 1) % n];
-        let next = outer[(i + 1) % n];
-        let turn = cross2(sub(v, prev), sub(next, v));
-        if turn > 0.0 {
-            continue; // convex, skip
-        }
-        let tan = ((v.1 - m.1).abs() / (v.0 - m.0).max(f32::EPSILON)).abs();
-        let d2 = sqr_dist(v, m);
-        if tan < best_tan || (tan == best_tan && d2 < best_dist2) {
-            best_tan = tan;
-            best_dist2 = d2;
-            p_idx = i;
-            p = v;
-            found_reflex = true;
-        }
-    }
-    let _ = (p, found_reflex); // names retained for readability above
-    Some(p_idx)
-}
-
-fn sqr_dist(a: (f32, f32), b: (f32, f32)) -> f32 {
-    let dx = a.0 - b.0;
-    let dy = a.1 - b.1;
-    dx * dx + dy * dy
 }
 
 fn point_in_polygon(p: (f32, f32), poly: &[(f32, f32)]) -> bool {
@@ -1131,92 +1039,9 @@ fn signed_area(pts: &[(f32, f32)]) -> f32 {
     s * 0.5
 }
 
-/// Ear-clip a CCW simple polygon. Returns triangle vertex indices into `pts`.
-fn ear_clip(pts: &[(f32, f32)]) -> Vec<[usize; 3]> {
-    let n = pts.len();
-    if n < 3 {
-        return Vec::new();
-    }
-    if n == 3 {
-        return vec![[0, 1, 2]];
-    }
-    let mut prev: Vec<usize> = (0..n).map(|i| (i + n - 1) % n).collect();
-    let mut next: Vec<usize> = (0..n).map(|i| (i + 1) % n).collect();
-    let mut active = n;
-    let mut tris: Vec<[usize; 3]> = Vec::with_capacity(n - 2);
-    let mut i = 0usize;
-    let mut safety = n * n + 16;
-
-    while active > 3 && safety > 0 {
-        safety -= 1;
-        let p = prev[i];
-        let q = next[i];
-        if is_ear(pts, p, i, q, &next) {
-            tris.push([p, i, q]);
-            next[p] = q;
-            prev[q] = p;
-            active -= 1;
-            i = p;
-        } else {
-            i = q;
-        }
-    }
-    if active == 3 {
-        let i0 = i;
-        let i1 = next[i0];
-        let i2 = next[i1];
-        tris.push([i0, i1, i2]);
-    }
-    tris
-}
-
-fn is_ear(
-    pts: &[(f32, f32)],
-    p: usize,
-    i: usize,
-    q: usize,
-    next: &[usize],
-) -> bool {
-    let a = pts[p];
-    let b = pts[i];
-    let c = pts[q];
-    // Convex on a CCW polygon means the turn at b is a left turn -> cross > 0.
-    if cross2(sub(b, a), sub(c, b)) <= 0.0 {
-        return false;
-    }
-    // No other vertex inside this triangle.
-    let mut k = next[q];
-    while k != p {
-        if point_in_tri(pts[k], a, b, c) {
-            return false;
-        }
-        k = next[k];
-    }
-    true
-}
-
-fn sub(a: (f32, f32), b: (f32, f32)) -> (f32, f32) {
-    (a.0 - b.0, a.1 - b.1)
-}
-
-fn cross2(a: (f32, f32), b: (f32, f32)) -> f32 {
-    a.0 * b.1 - a.1 * b.0
-}
-
-fn point_in_tri(p: (f32, f32), a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> bool {
-    let d1 = cross2(sub(p, a), sub(b, a));
-    let d2 = cross2(sub(p, b), sub(c, b));
-    let d3 = cross2(sub(p, c), sub(a, c));
-    let has_neg = (d1 < 0.0) || (d2 < 0.0) || (d3 < 0.0);
-    let has_pos = (d1 > 0.0) || (d2 > 0.0) || (d3 > 0.0);
-    !(has_neg && has_pos)
-}
-
 // ---------------------------------------------------------------------------
 // Phase 2.0d: textured thing sprite billboards + sprite picking metadata
 // ---------------------------------------------------------------------------
-
-const FALLBACK_THING_HEIGHT: f32 = 56.0;
 
 /// Picking record kept alongside each emitted sprite billboard so a click on
 /// the 3D viewport can be resolved back to a thing index without re-running
@@ -1244,6 +1069,8 @@ fn build_thing_sprite_batches(
     map: &MapData,
     thing_filter: &[bool; 11],
     cam: &Cam3D,
+    bank: &mut super::textures::TextureBank,
+    wad: &crate::wad::Wad,
     by_tex: &mut TexBatchMap,
     picks: &mut Vec<SpritePick>,
 ) {
@@ -1262,12 +1089,11 @@ fn build_thing_sprite_batches(
             continue; // unknown type — skip rather than render a fallback marker
         };
 
-        // Use the radius for billboard half-width (matches the in-game silhouette
-        // footprint). Height: monsters/things stand on the floor; we fall back
-        // to a fixed pixel height because we don't know real sprite size yet.
-        let radius = (things_table::radius_of(t.thing_type) as f32).max(8.0);
-        let half_w = radius;
-        let height = FALLBACK_THING_HEIGHT.max(radius * 1.5);
+        // Doom convention: 1 sprite pixel = 1 world unit. Quad spans the
+        // sprite's true pixel dimensions, anchored bottom-center on the floor.
+        let (sw, sh) = bank.sprite_dims(wad, sprite_name);
+        let half_w = (sw as f32 * 0.5).max(1.0);
+        let height = (sh as f32).max(1.0);
         let foot_z = sector_floor_at(map, t.x as f32, t.y as f32).unwrap_or(0.0);
         let head_z = foot_z + height;
         let cx = t.x as f32;

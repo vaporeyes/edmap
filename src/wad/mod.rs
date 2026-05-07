@@ -10,7 +10,7 @@ mod write;
 
 pub use error::WadError;
 pub use header::WadKind;
-pub use lump::Wad;
+pub use lump::{merge_wads, Wad};
 pub use map::{MapData, Vertex, LineDef, SideDef, Sector, Thing, MapName};
 pub use texture::{
     parse_pnames, parse_textures, Flat, Palette, Patch, PatchName, TextureDef,

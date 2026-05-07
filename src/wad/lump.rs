@@ -145,6 +145,60 @@ impl Wad {
     }
 }
 
+/// Merge two WAD byte buffers into a single PWAD/IWAD byte buffer.
+///
+/// `primary` lumps appear first in the output directory, so `find_lump`
+/// resolves them ahead of `fallback` on name collisions. Marker lumps
+/// (`F_START`/`F_END`, etc.) from both inputs are preserved; `lumps_between`
+/// already supports multiple ranges with the same marker pair.
+///
+/// The output magic matches `primary`'s magic.
+pub fn merge_wads(primary: &[u8], fallback: &[u8]) -> Result<Vec<u8>, WadError> {
+    let p = Wad::from_bytes(primary.to_vec())?;
+    let f = Wad::from_bytes(fallback.to_vec())?;
+
+    let magic: &[u8; 4] = match p.header.kind {
+        super::header::WadKind::Iwad => b"IWAD",
+        super::header::WadKind::Pwad => b"PWAD",
+    };
+
+    let mut out = Vec::new();
+    out.extend_from_slice(magic);
+    out.extend_from_slice(&0u32.to_le_bytes()); // num_lumps placeholder
+    out.extend_from_slice(&0u32.to_le_bytes()); // dir_offset placeholder
+
+    // Emit lumps: primary first, then fallback. Track new (offset, size, name).
+    let mut new_entries: Vec<(u32, u32, String)> = Vec::with_capacity(
+        p.directory.len() + f.directory.len(),
+    );
+    let sources: [(&Wad, &[LumpEntry]); 2] = [
+        (&p, p.directory.as_slice()),
+        (&f, f.directory.as_slice()),
+    ];
+    for (wad, entries) in sources {
+        for entry in entries {
+            let off = out.len() as u32;
+            out.extend_from_slice(wad.lump_bytes(entry));
+            new_entries.push((off, entry.size, entry.name.clone()));
+        }
+    }
+
+    let dir_off = out.len() as u32;
+    for (off, size, name) in &new_entries {
+        out.extend_from_slice(&off.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        let mut padded = [0u8; 8];
+        let nb = name.as_bytes();
+        let n = nb.len().min(8);
+        padded[..n].copy_from_slice(&nb[..n]);
+        out.extend_from_slice(&padded);
+    }
+
+    out[4..8].copy_from_slice(&(new_entries.len() as u32).to_le_bytes());
+    out[8..12].copy_from_slice(&dir_off.to_le_bytes());
+    Ok(out)
+}
+
 fn is_map_marker_name(s: &str) -> bool {
     let b = s.as_bytes();
     if b.len() == 4 && b[0] == b'E' && b[2] == b'M' {
